@@ -1,17 +1,28 @@
-# Koristimo laganu verziju Pythona
+# 1. Base Image
 FROM python:3.11-slim
 
-# Postavljamo radni direktorij unutar kontejnera
+# 2. Security: Kreiraj sistemskog korisnika 'appuser'
+# Nikad ne vrti aplikacije kao root!
+RUN useradd -m -u 1000 appuser
+
 WORKDIR /app
 
-# Prvo kopiramo requirements da iskoristimo Docker cache
+# 3. Install Dependencies
+# Kopiramo samo requirements prvo da iskoristimo Docker cache
 COPY requirements.txt .
-
-# Instaliramo biblioteke
 RUN pip install --no-cache-dir -r requirements.txt
 
+# 4. Copy Code
 # Kopiramo ostatak koda
 COPY . .
 
-# Ova komanda se gazi u docker-compose, ali je tu za svaki slučaj
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 5. Permissions
+# Osiguraj da appuser posjeduje datoteke
+RUN chown -R appuser:appuser /app
+
+# 6. Switch User
+USER appuser
+
+# 7. Start
+# --proxy-headers je bitan ako si iza ngroka ili Nginxa
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]

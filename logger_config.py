@@ -3,7 +3,6 @@ import logging
 import sys
 
 def configure_logger():
-    """Konfigurira strukturirano JSON logiranje."""
     structlog.configure(
         processors=[
             structlog.processors.TimeStamper(fmt="iso"),
@@ -12,6 +11,5 @@ def configure_logger():
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
     )
-    
-    # Preusmjeri standardni logging na structlog
+    # Preusmjeravamo uvicorn/fastapi logove na naš format
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=logging.INFO)

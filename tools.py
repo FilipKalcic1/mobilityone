@@ -1,35 +1,41 @@
 import asyncio
-import structlog
 from services.cache import CacheService
 
-logger = structlog.get_logger()
+# --- DATA LAYER (Ovo bi u pravoj app bio repository pattern) ---
+async def _fetch_vehicle_from_db(plate: str) -> str:
+    # Simulacija DB poziva - ovdje ide pravi SQL
+    await asyncio.sleep(0.2) 
+    return f"Vozilo {plate} je locirano u Zagrebu. Status: U pokretu."
 
-# Simulacija baze
-async def _db_fetch_vehicle(plate: str):
-    await asyncio.sleep(0.5) # Simulacija latencije
-    return f"Vozilo {plate} je u Zagrebu. Status: OK."
+async def _fetch_card_from_api(card_id: str) -> str:
+    # Simulacija vanjskog API-ja
+    await asyncio.sleep(0.2)
+    return f"INA Kartica {card_id}: Stanje 150.45 EUR."
 
-async def _db_fetch_ina(card_id: str):
-    await asyncio.sleep(0.5)
-    return f"Kartica {card_id}: Stanje 200 EUR."
-
-# Javne funkcije koje koriste cache
-async def tool_vehicle_status(query: str, cache: CacheService) -> str:
-    # Kreiramo ključ na temelju upita
-    cache_key = f"vehicle:{query.strip().replace(' ', '_')}"
+# --- BUSINESS LOGIC ---
+async def tool_vehicle_status(params: dict, cache: CacheService) -> str:
+    plate = params.get("plate")
+    if not plate:
+        return "Nedostaje registracija vozila. Molim navedite registraciju."
     
-    # CacheService će provjeriti Redis prije nego pozove _db_fetch_vehicle
-    result = await cache.get_or_compute(cache_key, _db_fetch_vehicle, query)
-    return result
+    # Normalizacija ključa
+    clean_plate = plate.strip().upper()
+    cache_key = f"vehicle:{clean_plate}"
+    
+    return await cache.get_or_compute(cache_key, _fetch_vehicle_from_db, clean_plate)
 
-async def tool_ina_info(query: str, cache: CacheService) -> str:
-    cache_key = f"ina:{query.strip()}"
-    result = await cache.get_or_compute(cache_key, _db_fetch_ina, query)
-    return result
+async def tool_ina_info(params: dict, cache: CacheService) -> str:
+    card_id = params.get("card_id")
+    if not card_id:
+        return "Nedostaje broj kartice."
+        
+    cache_key = f"ina:{card_id.strip()}"
+    return await cache.get_or_compute(cache_key, _fetch_card_from_api, card_id)
 
-async def tool_fallback(query: str, cache: CacheService) -> str:
-    return "Mogu provjeriti status vozila ili INA kartice."
+async def tool_fallback(params: dict, cache: CacheService) -> str:
+    return "Nisam siguran kako pomoći s tim. Mogu provjeriti status vozila ili INA kartice."
 
+# Registry
 TOOLS_MAP = {
     "vehicle_status": tool_vehicle_status,
     "ina_info": tool_ina_info,

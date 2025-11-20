@@ -1,12 +1,12 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+from typing import Literal
 
 class Settings(BaseSettings):
-    # Promijenili smo ENV u APP_ENV jer docker šalje 'app_env'
-    APP_ENV: str = "production"
+    # Dozvoljene samo ove vrijednosti
+    APP_ENV: Literal["development", "production", "testing"] = "development"
     
-    # Redis
-    REDIS_URL: str = "redis://localhost:6379"
+    REDIS_URL: str
     
     # OpenAI
     OPENAI_API_KEY: str
@@ -19,13 +19,9 @@ class Settings(BaseSettings):
     INFOBIP_SENDER_NUMBER: str
     INFOBIP_SECRET_KEY: str
 
-    # --- KONFIGURACIJA ---
-    # 'extra="ignore"' je ključan dio koji sprječava rušenje
-    # ako u .env imate stare varijable (sms_sender_id, itd.)
-    model_config = SettingsConfigDict(
-        env_file=".env", 
-        extra="ignore" 
-    )
+    # Konfiguracija: 'extra="forbid"' znači da će se app srušiti
+    # ako u .env imaš varijable koje nisu ovdje definirane (sprječava nered)
+    model_config = SettingsConfigDict(env_file=".env", extra="forbid")
 
 @lru_cache()
 def get_settings() -> Settings:

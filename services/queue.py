@@ -1,44 +1,53 @@
 import json
 import redis.asyncio as redis
 import asyncio
-from typing import Dict, Any
+import uuid
+
+QUEUE_OUTBOUND = "whatsapp_outbound"
+QUEUE_SCHEDULE = "schedule_retry"
 
 class QueueService:
-    queue_name = "whatsapp_outbound"
-    schedule_queue_name = "schedule_queue"
-    
     def __init__(self, redis_client: redis.Redis):
         self.redis = redis_client
 
-    async def enqueue(self, to: str, text: str, attempts: int = 0):
+    async def enqueue(self, to: str, text: str, correlation_id: str = None, attempts: int = 0):
         """
-        Stavlja poruku u Redis Listu (FIFO Queue).
+        Stavlja poruku u red za slanje.
+        Prima optional 'correlation_id' za praćenje poruke kroz sustav.
         """
-        payload = {
+        # Ako ID nije proslijeđen (npr. iz starih testova), generiraj novi
+        if not correlation_id:
+            correlation_id = str(uuid.uuid4())
+
+        payload = json.dumps({
             "to": to,
             "text": text,
-            "attempts": attempts 
-        }
+            "cid": correlation_id, # CID putuje s porukom
+            "attempts": attempts
+        })
+        
         # RPUSH dodaje na kraj liste
-        await self.redis.rpush(self.queue_name, json.dumps(payload))
+        await self.redis.rpush(QUEUE_OUTBOUND, payload)
 
-    async def schedule_retry(self, payload: Dict[str, Any]):
+    async def schedule_retry(self, payload: dict):
         """
         Stavlja poruku natrag u red s odgodom koristeći Redis ZSET.
         """
         attempts = payload.get('attempts', 0) + 1
         
-        # Limit pokušaja (npr. 5)
+        # Limit pokušaja (npr. 5) - Dead Letter logika
         if attempts >= 5:
-            return "DEAD_LETTER"
+            return 
 
         # Eksponencijalni backoff: 2^attempts (2s, 4s, 8s...)
         delay = 2 ** attempts
         payload['attempts'] = attempts
         
         # ZADD dodaje u Sorted Set gdje je score = vrijeme izvršavanja
+        # Bitno: payload sada sadrži i 'cid', pa ga ne gubimo kod retry-a
+        execute_at = asyncio.get_event_loop().time() + delay
+        
         await self.redis.zadd(
-            self.schedule_queue_name, 
-            {json.dumps(payload): asyncio.get_event_loop().time() + delay}
+            QUEUE_SCHEDULE, 
+            {json.dumps(payload): execute_at}
         )
-        return "SCHEDULED"
