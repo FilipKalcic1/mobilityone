@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  # 1. BAZA (Redis)
+  redis:
+    image: redis:7-alpine
+    container_name: fleet_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data  # Trajno spremanje podataka (Persistence)
+    command: redis-server --appendonly yes  # Osigurava da podaci prežive restart
+
+  # 2. MOZAK (API)
+  api:
+    build: .
+    container_name: fleet_api
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - .:/app  # Live reload: promjene u kodu se vide odmah
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379  # Ime servisa 'redis' postaje hostname
+
+  # 3. MIŠIĆI (Worker)
+  worker:
+    build: .
+    container_name: fleet_worker
+    command: python worker.py
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+
+# Definiramo trajni volumen za Redis
+volumes:
+  redis_data:
