@@ -1,0 +1,50 @@
+Naravno. Slijede izravne instrukcije za pokretanje sustava i sažetak implementiranih funkcionalnosti, prilagođeno za profesionalnu dokumentaciju.
+
+🚀 Upute za pokretanje sustava
+Slijedite ove korake striktnim redoslijedom kako biste podigli mikroservis u produkcijskom ili testnom okruženju.
+
+1. Konfiguracija okoline Kreirajte datoteku .env u korijenskom direktoriju projekta i unesite produkcijske varijable (bez suvišnih/starih ključeva):
+
+Isječak koda
+
+APP_ENV=production
+REDIS_URL=redis://redis:6379
+OPENAI_API_KEY=sk-proj-...
+INFOBIP_BASE_URL=xxxxx.api.infobip.com
+INFOBIP_API_KEY=...
+INFOBIP_SENDER_NUMBER=...
+INFOBIP_SECRET_KEY=...
+2. Podizanje kontejnera Izvršite izgradnju i pokretanje Docker servisa u pozadini:
+
+Bash
+
+docker-compose up --build -d
+3. Verifikacija servisa Provjerite status servisa pozivom na Health Check endpoint:
+
+Bash
+
+curl http://localhost:8000/health
+# Očekivani odgovor: {"status": "ok", "service": "whatsapp-webhook"}
+4. Izlaganje Webhooka (Samo za lokalni razvoj) Ako se sustav ne nalazi na javnoj IP adresi, uspostavite tunel:
+
+Bash
+
+ngrok http 8000
+Kopirajte generirani HTTPS URL u Infobip postavke broja (Forwarding sekcija): https://<vas-ngrok-id>.ngrok-free.app/webhook/whatsapp
+
+✅ Rezime implementacije (Project Summary)
+Ovaj projekt predstavlja robustan, asinkroni mikroservis za upravljanje voznim parkom. Implementirane su sljedeće ključne arhitektonske i funkcionalne komponente:
+
+Asinkrona arhitektura: Razdvojena logika na API Gateway (Webhook) za brzi prijem poruka i Worker servis za tešku obradu, povezani putem Redisa.
+
+Dvosmjerna komunikacija (2-Way Messaging): Potpuna integracija s Infobip WhatsApp API-jem za primanje upita i slanje odgovora korisnicima.
+
+Inteligentna obrada (NLP): Integracija OpenAI modela za prepoznavanje namjere korisnika (Intent Recognition) i ekstrakciju parametara iz prirodnog jezika.
+
+Sustav otpornosti (Reliability): Implementiran Exponential Backoff mehanizam za automatski ponovni pokušaj slanja poruka u slučaju mrežnih grešaka.
+
+Sljedivost (Traceability): Uveden correlation_id koji prati svaki zahtjev od ulaska u webhook do konačne obrade, omogućujući precizno praćenje grešaka u logovima.
+
+Sigurnost (Security): Implementirana HMAC-SHA256 validacija potpisa za osiguranje integriteta svih dolaznih webhook zahtjeva.
+
+Konfiguracijska strogost: Korištenje Pydantic modela za strogu validaciju environment varijabli, sprječavajući pokretanje sustava s neispravnom konfiguracijom.
