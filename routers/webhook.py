@@ -28,6 +28,7 @@ def get_context(request: Request) -> ContextService:
 async def health_check():
     return {"status": "ok", "service": "whatsapp-webhook"}
 
+
 @router.post(
     "/webhook/whatsapp", 
     dependencies=[
@@ -35,6 +36,7 @@ async def health_check():
         Depends(RateLimiter(times=60, minutes=1))
     ]
 )
+
 async def whatsapp_entrypoint(
     request: Request,
     queue: QueueService = Depends(get_queue),
@@ -51,7 +53,7 @@ async def whatsapp_entrypoint(
         if not data.get('results'):
             return {"status": "ignored", "reason": "empty_results"}
             
-        message_data = data['results'][0]
+        message_data = data['results'][0] ### 
         user_text = message_data.get('text')
         sender = message_data.get('from')
         
@@ -77,9 +79,15 @@ async def whatsapp_entrypoint(
         
         log.info("Intent detected", intent=tool_name, confidence=ai_decision.get("confidence"))
 
-        # 4. Izvršavanje Alata
+        # 4. Izvršavanje Alata (OVDJE VRAĆAMO PROVJERU)
         handler = TOOLS_MAP.get(tool_name, TOOLS_MAP["fallback"])
-        response_text = await handler(params, cache)
+        
+        try:
+            response_text = await handler(params, cache)
+        except Exception as tool_error:
+            # Ako alat (baza) pukne, logiramo ali i obavještavamo korisnika
+            log.error("Tool execution failed", error=str(tool_error))
+            response_text = "Došlo je do greške u sustavu. Molim pokušajte kasnije."
 
         # 5. Slanje odgovora u Red (s ID-om zahtjeva!)
         await context.add_message(sender, "assistant", response_text)
@@ -88,5 +96,6 @@ async def whatsapp_entrypoint(
         return {"status": "queued", "req_id": request_id}
 
     except Exception as e:
-        log.error("Internal processing error", error=str(e))
+        # Ovo hvata samo kritične greške (npr. pukao Redis ili AI servis)
+        log.error("Critical system error", error=str(e))
         return {"status": "error"}
