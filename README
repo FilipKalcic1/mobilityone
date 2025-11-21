@@ -1,117 +1,67 @@
-Evo kompletan kod za `README.md` bez emojija, koristeći HTML elemente za profesionalni izgled. Samo kopirajte i zalijepite.
+## 🚀 Upute za pokretanje sustava
 
-````markdown
-<div align="center">
+Slijedite ove korake striktnim redoslijedom kako biste podigli mikroservis u produkcijskom ili testnom okruženju.
 
-# MobilityOne Fleet AI
+## Konfiguracija okoline
+Kreirajte datoteku .env u korijenskom direktoriju projekta i unesite produkcijske varijable (bez suvišnih/starih ključeva):
 
-**Enterprise-grade async microservice for fleet management via WhatsApp.**
-<br>
-*Receives messages · Infers intent via OpenAI · Responds asynchronously via Infobip*
+## Isječak koda
 
-<br>
+APP_ENV=production
 
-[![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.109-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Redis](https://img.shields.io/badge/Redis-7.0-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com)
+REDIS_URL=redis://redis:6379
 
-</div>
+OPENAI_API_KEY=sk-proj-...
 
----
+INFOBIP_BASE_URL=xxxxx.api.infobip.com
 
-## System Architecture
+INFOBIP_API_KEY=...
 
-This system uses a non-blocking event loop. The API accepts requests instantly, while heavy lifting (AI processing) happens in the background.
+INFOBIP_SENDER_NUMBER=...
 
-<div align="center">
+INFOBIP_SECRET_KEY=...
 
-```mermaid
-graph LR
-    A[User] -->|WhatsApp| B(API Gateway)
-    B -->|Push Task| C[Redis Queue]
-    C -->|Pop Task| D[Worker Service]
-    D -->|Analyze| E[OpenAI GPT-4]
-    D -->|Reply| A
-````
+## Podizanje kontejnera
+ 
+Izvršite izgradnju i pokretanje Docker servisa u pozadini:
 
-\</div\>
+Bash
 
-## Quick Start
-
-### 1\. Configuration
-
-Create a `.env` file in your root directory.
-
-\<details\>
-\<summary\>\<strong\>Click to view .env requirements\</strong\>\</summary\>
-<br>
-
-| Variable | Description | Example |
-| :--- | :--- | :--- |
-| `APP_ENV` | Environment mode | `production` |
-| `REDIS_URL` | Redis connection | `redis://redis:6379` |
-| `OPENAI_API_KEY` | LLM Provider | `sk-...` |
-| `INFOBIP_API_KEY` | WhatsApp Provider | `(Your Secret Key)` |
-
-\</details\>
-
-### 2\. Deployment
-
-Run the full stack in detached mode.
-
-```bash
 docker-compose up --build -d
-```
 
-**Endpoints:**
+## Verifikacija servisa
 
-  * **API Health:** `http://localhost:8000/health`
-  * **Webhook:** `POST /webhook/whatsapp`
+Provjerite status servisa pozivom na Health Check endpoint:
 
------
+Bash
 
-## Project Structure
+curl http://localhost:8000/health
+ 
+ #Očekivani odgovor: {"status": "ok", "service": "whatsapp-webhook"}
 
-| Path | Component | Description |
-| :--- | :--- | :--- |
-| `routers/webhook.py` | **API Gateway** | Validates HMAC signatures & queues tasks. |
-| `services/ai.py` | **Intelligence** | Wraps OpenAI API for intent classification. |
-| `services/queue.py` | **Message Broker** | Redis wrapper with exponential backoff. |
-| `worker.py` | **Processor** | Background service; handles external API calls. |
-| `config.py` | **Config** | Strict Pydantic validation for env vars. |
+## Izlaganje Webhooka (Samo za lokalni razvoj)
 
------
+Ako se sustav ne nalazi na javnoj IP adresi, uspostavite tunel:
 
-## Security & Reliability
+Bash
 
-\<table width="100%"\>
-\<tr\>
-\<td width="50%"\>
+ngrok http 8000
+Kopirajte generirani HTTPS URL u Infobip postavke broja (Forwarding sekcija): 
+https://<vas-ngrok-id>.ngrok-free.app/webhook/whatsapp
+## Rezime aplikacije
 
-### Security
+Implementirane su sljedeće ključne arhitektonske i funkcionalne komponente:
 
-  * **HMAC-SHA256:** All incoming webhooks are cryptographically verified against `INFOBIP_SECRET_KEY`.
-  * **Strict Config:** The app refuses to start if the environment is misconfigured.
-  * **No Root:** Docker containers run as a non-privileged user.
+Asinkrona arhitektura: Razdvojena logika na API Gateway (Webhook) za brzi prijem poruka i Worker servis za tešku obradu, povezani putem Redisa.
 
-\</td\>
-\<td width="50%"\>
+Dvosmjerna komunikacija (2-Way Messaging): Potpuna integracija s Infobip WhatsApp API-jem za primanje upita i slanje odgovora korisnicima.
 
-### Reliability
+Inteligentna obrada (NLP): Integracija OpenAI modela za prepoznavanje namjere korisnika (Intent Recognition) i ekstrakciju parametara iz prirodnog jezika.
 
-  * **Async Design:** Webhooks return `200 OK` in \<50ms.
-  * **Retry Logic:** Failed deliveries trigger an exponential backoff loop (2s, 4s, 8s...).
-  * **Traceability:** Every log entry includes a unique `correlation_id`.
+Sustav otpornosti (Reliability): Implementiran Exponential Backoff mehanizam za automatski ponovni pokušaj slanja poruka u slučaju mrežnih grešaka.
 
-\</td\>
-\</tr\>
-\</table\>
+Sljedivost (Traceability): Uveden correlation_id koji prati svaki zahtjev od ulaska u webhook do konačne obrade, omogućujući precizno praćenje grešaka u logovima.
 
-\<div align="center"\>
-<br>
-\<sub\>Built for high-throughput production environments.\</sub\>
-\</div\>
+Sigurnost (Security): Implementirana HMAC-SHA256 validacija potpisa za osiguranje integriteta svih dolaznih webhook zahtjeva.
 
-```
-```
+Konfiguracijska strogost: Korištenje Pydantic modela za strogu validaciju environment varijabli, sprječavajući pokretanje sustava s neispravnom konfiguracijom.
