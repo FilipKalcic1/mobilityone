@@ -1,59 +1,99 @@
 import json
 import structlog
+from typing import List, Dict, Any
 from openai import AsyncOpenAI
 from config import get_settings
-from typing import List, Dict, Any
 
 settings = get_settings()
 logger = structlog.get_logger("ai")
 client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
+
 SYSTEM_PROMPT = """
-You are a Fleet Management AI Assistant.
-Analyze the user request and extract intent.
+Ti si odgovoran i oprezan AI asistent za upravljanje voznim parkom (MobilityOne).
+Tvoj cilj je točno izvršavati zadatke koristeći dostupne alate.
 
-TOOLS:
-- 'vehicle_status': User asks about vehicle location or status. Requires 'plate'.
-- 'ina_info': User asks about INA card balance/info. Requires 'card_id'.
-- 'fallback': If intent is unclear or unrelated.
+### PRAVILA SIGURNOSTI (CRITICAL):
+1. **SAFE AKCIJE (GET/READ):** - Ako korisnik traži informaciju (npr. "Gdje je vozilo?", "Stanje računa", "Daj mi izvještaj"), ODMAH pozovi odgovarajući alat. 
+   - Nemoj tražiti potvrdu za čitanje podataka.
 
-OUTPUT FORMAT (JSON ONLY):
-{
-  "tool": "vehicle_status" | "ina_info" | "fallback",
-  "confidence": float (0.0-1.0),
-  "parameters": {
-    "plate": "string or null",
-    "card_id": "string or null"
-  }
-}
+2. **DANGEROUS AKCIJE (POST/DELETE/UPDATE):** - Ako korisnik želi nešto promijeniti, obrisati ili poslati (npr. "Obriši vozilo", "Ažuriraj status", "Prijavi servis", "Blokiraj karticu"):
+   - **NIKADA** ne pozivaj alat odmah u prvom koraku!
+   - **PRVO** objasni korisniku što ćeš učiniti i traži jasnu potvrdu (npr. "Jeste li sigurni da želite prijaviti servis za ZG-123? Odgovorite s DA.").
+   - **TEK NAKON** što korisnik napiše "DA", "Potvrđujem" ili slično u idućoj poruci (provjeri povijest razgovora), pozovi alat.
+
+### UPUTE ZA RAZGOVOR:
+- Budi kratak, profesionalan i direktan.
+- Ako alat vrati grešku (npr. "Vozilo nije nađeno"), točno to prenesi korisniku. Ne izmišljaj uspjeh.
+- Nikad ne izmišljaj ID-eve, registracije ili podatke koji nisu eksplicitno navedeni u razgovoru ili dohvaćeni alatom.
 """
 
-async def analyze_intent(history: List[Dict], current_text: str) -> Dict[str, Any]:
+async def analyze_intent(
+    history: List[Dict], 
+    current_text: str, 
+    tools: List[Dict] = None
+) -> Dict[str, Any]:
+    """
+    Šalje upit OpenAI modelu. 
+    Zahvaljujući SYSTEM_PROMPT-u, model sam odlučuje hoće li odmah pozvati alat 
+    ili će prvo vratiti tekstualno pitanje za potvrdu.
+    """
     if not current_text:
-        return {"tool": "fallback", "parameters": {}}
+        return {"tool": None, "response_text": ""}
 
-    # Priprema poruka
+
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    
     for h in history:
-        messages.append({"role": h.get("role"), "content": h.get("content")})
+
+        role = "assistant" if h.get("role") == "assistant" else "user"
+        messages.append({"role": role, "content": h.get("content")})
+    
     messages.append({"role": "user", "content": current_text})
 
     try:
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=messages,
-            temperature=0,
-            response_format={"type": "json_object"} 
-        )
+
+        call_args = {
+            "model": settings.OPENAI_MODEL,
+            "messages": messages,
+            "temperature": 0, 
+        }
+
+
+        if tools:
+            call_args["tools"] = tools
+            call_args["tool_choice"] = "auto" 
+
+        response = await client.chat.completions.create(**call_args)
+        msg = response.choices[0].message
         
-        data = json.loads(response.choices[0].message.content)
-        
-        # Sigurnosna provjera confidence-a
-        if data.get("confidence", 0) < settings.AI_CONFIDENCE_THRESHOLD:
-            return {"tool": "fallback", "parameters": {}}
+
+        if msg.tool_calls:
+            tool_call = msg.tool_calls[0]
+            function_name = tool_call.function.name
+            arguments_str = tool_call.function.arguments
             
-        return data
+            try:
+                parameters = json.loads(arguments_str)
+            except json.JSONDecodeError:
+
+                logger.error("AI generated invalid JSON parameters", raw=arguments_str)
+                return {"tool": None, "response_text": "Došlo je do tehničke greške u formatu podataka."}
+
+            logger.info("AI selected tool", tool=function_name)
+            return {
+                "tool": function_name,
+                "parameters": parameters,
+                "response_text": None
+            }
+            
+
+        return {
+            "tool": None,
+            "parameters": {},
+            "response_text": msg.content
+        }
 
     except Exception as e:
         logger.error("AI inference failed", error=str(e))
-        return {"tool": "fallback", "parameters": {}}
+        return {"tool": None, "response_text": "Isprike, trenutno imam poteškoća s obradom vašeg zahtjeva."}

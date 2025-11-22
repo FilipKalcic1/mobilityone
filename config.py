@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-3.5-turbo"
     AI_CONFIDENCE_THRESHOLD: float = 0.85
 
+    #mobility one 
+    MOBILITY_API_URL: str  
+    MOBILITY_API_TOKEN: str = None 
+
     # Infobip
     INFOBIP_BASE_URL: str
     INFOBIP_API_KEY: str

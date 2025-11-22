@@ -1,0 +1,24 @@
+{
+  "openapi": "3.0.0",
+  "info": { "title": "MobilityOne API", "version": "1.0.0" },
+  "paths": {
+    "/vehicles/location": {
+      "get": {
+        "operationId": "get_vehicle_location",
+        "summary": "Provjeri trenutnu lokaciju vozila, status motora i vozača."
+      }
+    },
+    "/cards/balance": {
+      "get": {
+        "operationId": "get_card_balance",
+        "summary": "Provjeri stanje i limit na INA kartici za gorivo."
+      }
+    },
+    "/system/health": {
+      "get": {
+        "operationId": "check_system_health",
+        "summary": "Tehnička provjera radi li server ispravno."
+      }
+    }
+  }
+}
