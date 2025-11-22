@@ -1,9 +1,7 @@
-
 import uuid
 import structlog
-from fastapi import APIRouter, Depends, status
-
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Request, status
+from pydantic import BaseModel, Field, ConfigDict # Import ConfigDict
 from typing import List
 
 from services.queue import QueueService
@@ -17,23 +15,25 @@ from fastapi_limiter.depends import RateLimiter
 router = APIRouter()
 logger = structlog.get_logger("webhook")
 
-# Mogu  ići u zaseban file schemas.py)
+# --- PYDANTIC MODELI ---
 class InfobipMessage(BaseModel):
     text: str
-    sender: str = Field(..., alias="from") 
+    sender: str = Field(..., alias="from")
     messageId: str
+    
+
+    model_config = ConfigDict(extra='ignore')
 
 class InfobipWebhookPayload(BaseModel):
     results: List[InfobipMessage]
+    
+
+    model_config = ConfigDict(extra='ignore')
 
 
-def get_queue(request): return request.app.state.queue
-def get_cache(request): return request.app.state.cache
-def get_context(request): return request.app.state.context
-
-@router.get("/health")
-async def health_check():
-    return {"status": "ok", "service": "whatsapp-webhook"}
+def get_queue(request: Request): return request.app.state.queue
+def get_cache(request: Request): return request.app.state.cache
+def get_context(request: Request): return request.app.state.context
 
 @router.post(
     "/webhook/whatsapp", 
@@ -51,11 +51,8 @@ async def whatsapp_entrypoint(
     request_id = str(uuid.uuid4())
     log = logger.bind(req_id=request_id)
 
-
-    
     if not payload.results:
         return {"status": "ignored", "reason": "empty_results"}
-
 
     message = payload.results[0]
     user_text = message.text
@@ -66,12 +63,10 @@ async def whatsapp_entrypoint(
     if not user_text:
         return {"status": "ignored", "reason": "no_text"}
 
-
     try:
         await context.add_message(sender, "user", user_text)
         history = await context.get_history(sender)
         
-        # AI analiza
         ai_decision = await analyze_intent(history[:-1], user_text)
         tool_name = ai_decision.get("tool", "fallback")
         params = ai_decision.get("parameters", {})

@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # 1. BAZA (Redis)
   redis:
     image: redis:7-alpine
     container_name: fleet_redis
@@ -9,26 +8,41 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data  # Trajno spremanje podataka (Persistence)
-    command: redis-server --appendonly yes  # Osigurava da podaci prežive restart
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
-  # 2. MOZAK (API)
+    labels:
+      - "autoheal=true"
+
   api:
     build: .
     container_name: fleet_api
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --proxy-headers
     volumes:
-      - .:/app  # Live reload: promjene u kodu se vide odmah
+      - .:/app
     ports:
       - "8000:8000"
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
-      - REDIS_URL=redis://redis:6379  # Ime servisa 'redis' postaje hostname
+      - REDIS_URL=redis://redis:6379
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    labels:
+      - "autoheal=true"
 
-  # 3. MIŠIĆI (Worker)
   worker:
     build: .
     container_name: fleet_worker
@@ -36,12 +50,24 @@ services:
     volumes:
       - .:/app
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
     env_file:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379
 
-# Definiramo trajni volumen za Redis
+
+  autoheal:
+    image: willfarrell/autoheal
+    container_name: fleet_autoheal
+    restart: always
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=all
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
 volumes:
   redis_data:
