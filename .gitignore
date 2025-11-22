@@ -26,3 +26,6 @@ Thumbs.db
 # IDEs
 .vscode/
 .idea/
+
+# API Definitions (NOVO - ne šalji na GitHub)
+swagger.json
