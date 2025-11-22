@@ -6,18 +6,15 @@ import time
 import structlog
 from fastapi_limiter import FastAPILimiter
 
-
 from routers import webhook
 from config import get_settings
 from logger_config import configure_logger
-
 
 from services.queue import QueueService
 from services.cache import CacheService
 from services.context import ContextService
 from services.tool_registry import ToolRegistry
 from services.openapi_bridge import OpenAPIGateway
-
 
 configure_logger()
 logger = structlog.get_logger("main")
@@ -27,29 +24,25 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """
     Startup & Shutdown logika.
-    Ovdje se inicijaliziraju sve 'teške' stvari prije nego server počne primati zahtjeve.
     """
     redis_client = None
     api_gateway = None
     
     try:
-
         logger.info("Connecting to Redis...")
         redis_client = redis.from_url(settings.REDIS_URL, encoding="utf-8", decode_responses=True)
         await FastAPILimiter.init(redis_client)
         logger.info("Redis connected successfully")
         
-  
         app.state.redis = redis_client
         app.state.queue = QueueService(redis_client)
         app.state.cache = CacheService(redis_client)
         app.state.context = ContextService(redis_client)
         
-
         logger.info("Loading Tool Registry...")
-        registry = ToolRegistry()
+        # --- BITNO: Prosljeđujemo redis_client ---
+        registry = ToolRegistry(redis_client)
         
-
         try:
             await registry.load_swagger("swagger.json")
         except FileNotFoundError:
@@ -58,7 +51,6 @@ async def lifespan(app: FastAPI):
 
         app.state.tool_registry = registry
         
-
         if not settings.MOBILITY_API_URL:
              error_msg = "CRITICAL: MOBILITY_API_URL is missing in configuration (.env)!"
              logger.critical(error_msg)
@@ -73,13 +65,11 @@ async def lifespan(app: FastAPI):
         logger.info("System fully operational", loaded_tools=len(registry.tools_names))
         
     except Exception as e:
-
         logger.critical("Startup failed", error=str(e))
         raise e
     
     yield 
     
-
     logger.info("Shutting down services...")
     if redis_client:
         await redis_client.close()
@@ -94,7 +84,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -102,7 +91,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
@@ -113,7 +101,6 @@ async def add_process_time_header(request: Request, call_next):
     return response
 
 app.include_router(webhook.router)
-
 
 @app.get("/health")
 async def health_check():

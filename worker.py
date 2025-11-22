@@ -6,7 +6,6 @@ import redis.asyncio as redis
 import structlog
 from config import get_settings
 from logger_config import configure_logger  
-# Importamo nove servise jer ih worker sada treba
 from services.queue import QueueService, QUEUE_OUTBOUND, QUEUE_SCHEDULE, QUEUE_INBOUND
 from services.context import ContextService
 from services.tool_registry import ToolRegistry
@@ -16,6 +15,22 @@ from services.ai import analyze_intent
 settings = get_settings()
 configure_logger()
 logger = structlog.get_logger("worker")
+
+# --- Funkcija za maskiranje osjetljivih podataka ---
+def sanitize_log_data(data: dict) -> dict:
+    clean_data = {}
+    SENSITIVE_KEYS = {'email', 'phone', 'password', 'token', 'authorization', 'secret', 'apikey'}
+    
+    for k, v in data.items():
+        if k.lower() in SENSITIVE_KEYS:
+            clean_data[k] = "***MASKED***"
+        elif isinstance(v, dict):
+            clean_data[k] = sanitize_log_data(v)
+        elif isinstance(v, str) and len(v) > 200:
+            clean_data[k] = v[:200] + "...(truncated)"
+        else:
+            clean_data[k] = v
+    return clean_data
 
 class WhatsappWorker:
     def __init__(self):
@@ -34,14 +49,13 @@ class WhatsappWorker:
         self.queue = QueueService(self.redis)
         self.context = ContextService(self.redis)
         
-        # Učitavanje alata
-        self.registry = ToolRegistry()
+        # --- BITNO: Prosljeđujemo self.redis u ToolRegistry ---
+        self.registry = ToolRegistry(self.redis)
         try:
             await self.registry.load_swagger("swagger.json")
         except Exception as e:
             logger.error("Failed to load swagger in worker", error=str(e))
 
-        # Inicijalizacija Gatewaya
         if settings.MOBILITY_API_URL:
              self.gateway = OpenAPIGateway(base_url=settings.MOBILITY_API_URL)
         
@@ -49,26 +63,20 @@ class WhatsappWorker:
 
         while self.running:
             try:
-                # Heartbeat za Docker healthcheck
                 await self.redis.setex("worker:heartbeat", 30, "alive")
-
                 await asyncio.gather(
                     self._process_outbound(),
                     self._process_retries(),
-                    self._process_inbound(), # <--- NOVO
+                    self._process_inbound(),
                     return_exceptions=True 
                 )
-                
                 await asyncio.sleep(0.1) 
-                
             except Exception as e:
                 logger.error("Critical loop error", error=str(e))
                 await asyncio.sleep(1)
-
         await self.shutdown()
 
     async def _process_inbound(self):
-        """Obrađuje dolazne poruke (AI Logika)"""
         if not self.running: return
 
         task = await self.redis.blpop(QUEUE_INBOUND, timeout=1)
@@ -79,23 +87,21 @@ class WhatsappWorker:
             sender = payload['sender']
             user_text = payload['text']
             
-            log = logger.bind(sender=sender)
+            # Sigurnije logiranje
+            log_ctx = {"sender": sender}
+            if settings.APP_ENV == "development":
+                log_ctx["text_preview"] = user_text[:50] 
+            
+            log = logger.bind(**log_ctx)
             log.info("Processing inbound message")
 
-            # 1. Spremi poruku korisnika
             await self.context.add_message(sender, "user", user_text)
-            
-            # 2. Pronađi alate
             relevant_tools = await self.registry.find_relevant_tools(user_text, top_k=5)
-
-            # 3. AI Analiza
             history = await self.context.get_history(sender)
-            # Šaljemo history bez zadnje poruke jer analyze_intent dodaje current_text
             ai_decision = await analyze_intent(history[:-1], user_text, tools=relevant_tools)
             
             final_response_text = ""
 
-            # 4. Izvršavanje alata
             if ai_decision.get("tool"):
                 tool_name = ai_decision["tool"]
                 params = ai_decision["parameters"]
@@ -105,13 +111,20 @@ class WhatsappWorker:
                 tool_def = self.registry.tools_map.get(tool_name)
                 if tool_def and self.gateway:
                     api_result = await self.gateway.execute_tool(tool_def, params)
+                    
+                    # Logiramo samo sanitizirane podatke
+                    if not api_result.get("error"):
+                        log.info("Tool execution success", 
+                                 result_preview=sanitize_log_data(api_result))
+                    else:
+                        log.warning("Tool execution failed", error_info=api_result)
+
                     final_response_text = f"✅ *Status:* Uspjeh\n📦 *Podaci:* {json.dumps(api_result, ensure_ascii=False)}"
                 else:
                     final_response_text = "⚠️ Greška: Alat nedostupan."
             else:
                 final_response_text = ai_decision.get("response_text", "Nisam razumio upit.")
 
-            # 5. Slanje odgovora
             await self.context.add_message(sender, "assistant", final_response_text)
             await self.queue.enqueue(sender, final_response_text)
 
@@ -120,20 +133,16 @@ class WhatsappWorker:
 
     async def _process_outbound(self):
         if not self.running: return
-
         task = await self.redis.blpop(QUEUE_OUTBOUND, timeout=1)
         if not task: return
-
         try:
             payload = json.loads(task[1])
-            # ... (ostatak koda isti kao prije)
             cid = payload.get("cid", "unknown")
             try:
                 await self._send_infobip(payload)
             except Exception as e:
                 logger.warn("Send failed", error=str(e))
                 await self.queue.schedule_retry(payload)
-                
         except json.JSONDecodeError:
             pass
 
@@ -164,7 +173,7 @@ class WhatsappWorker:
     async def shutdown(self):
         logger.info("Shutting down worker...")
         if self.http: await self.http.aclose()
-        if self.gateway: await self.gateway.close() # Zatvaramo gateway
+        if self.gateway: await self.gateway.close()
         if self.redis: await self.redis.aclose()
         logger.info("Worker stopped.")
 
