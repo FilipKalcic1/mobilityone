@@ -34,7 +34,6 @@ async def analyze_intent(history: List[Dict], current_text: str) -> Dict[str, An
 
     # Priprema poruka
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    # Filtriramo povijest da sadrži samo role i content
     for h in history:
         messages.append({"role": h.get("role"), "content": h.get("content")})
     messages.append({"role": "user", "content": current_text})
@@ -44,7 +43,7 @@ async def analyze_intent(history: List[Dict], current_text: str) -> Dict[str, An
             model=settings.OPENAI_MODEL,
             messages=messages,
             temperature=0,
-            response_format={"type": "json_object"} # Forsiramo validan JSON
+            response_format={"type": "json_object"} 
         )
         
         data = json.loads(response.choices[0].message.content)

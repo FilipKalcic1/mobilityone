@@ -15,28 +15,24 @@ async def test_webhook_end_to_end(async_client, redis_client):
         }]
     }
     
-    # Mockiramo AI da vrati "vehicle_status" alat
+
     mock_ai_response = {
         "tool": "vehicle_status",
         "confidence": 0.95,
         "parameters": {"plate": "ZG-1234"}
     }
-    
-    # Patchamo AI servis i Sigurnost
+
     with patch("services.ai.analyze_intent", return_value=mock_ai_response), \
          patch("routers.webhook.validate_infobip_signature", return_value=None):
          
         response = await async_client.post("/webhook/whatsapp", json=payload)
         
-        # --- FIX START ---
+
         assert response.status_code == 200
         data = response.json()
         
-        # Više ne uspoređujemo cijeli dict (==), nego provjeravamo ključna polja
+
         assert data["status"] == "queued"
-        assert "req_id" in data  # Provjeravamo da smo dobili ID zahtjeva
-        # --- FIX END ---
-        
-        # Provjeri je li odgovor završio u Redisu za slanje
-        # Koristimo 'whatsapp_outbound' jer tako QueueService radi interno
+        assert "req_id" in data  
+
         assert await redis_client.llen("whatsapp_outbound") == 1

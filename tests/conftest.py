@@ -4,20 +4,20 @@ from unittest.mock import MagicMock, AsyncMock
 from httpx import AsyncClient, ASGITransport
 from fastapi_limiter import FastAPILimiter
 
-# Import tvoje aplikacije
+
 from main import app
 from services.queue import QueueService
 from services.cache import CacheService
 from services.context import ContextService
 
-# --- FAKE REDIS (Čista implementacija) ---
+
 class FakeRedis:
     def __init__(self):
-        self.data = {}     # key: value
-        self.lists = {}    # key: [val1, val2]
-        self.sets = {}     # key: {member: score}
+        self.data = {}    
+        self.lists = {}    
+        self.sets = {}     
         
-    # --- OSNOVNE ASYNC METODE ---
+
     async def get(self, key):
         return self.data.get(key)
 
@@ -35,13 +35,13 @@ class FakeRedis:
         if key in self.sets: del self.sets[key]
         return 1
 
-    # --- LISTE ---
+
     async def rpush(self, key, value):
         if key not in self.lists: self.lists[key] = []
         self.lists[key].append(value)
         return len(self.lists[key])
     
-    # FIX: Dodana metoda llen koju test traži
+
     async def llen(self, key):
         if key not in self.lists: return 0
         return len(self.lists[key])
@@ -67,7 +67,7 @@ class FakeRedis:
     async def expire(self, key, time):
         return True
 
-    # --- ZSET ---
+  
     async def zadd(self, key, mapping):
         if key not in self.sets: self.sets[key] = {}
         self.sets[key].update(mapping)
@@ -79,7 +79,7 @@ class FakeRedis:
     async def zrem(self, key, member):
         return 1
 
-    # --- PIPELINE ---
+    
     def pipeline(self):
         return self
 
@@ -92,14 +92,14 @@ class FakeRedis:
     async def execute(self):
         return []
 
-    # --- FASTAPI LIMITER SUPPORT ---
+   
     async def eval(self, *args, **kwargs): return 0
     async def evalsha(self, *args, **kwargs): return 0
     
     async def script_load(self, script): 
         return "dummy_sha_123"
     
-    # --- CLOSE ---
+    
     async def close(self): pass
     async def aclose(self): pass
 

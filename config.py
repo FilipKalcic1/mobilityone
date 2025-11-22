@@ -3,7 +3,6 @@ from functools import lru_cache
 from typing import Literal
 
 class Settings(BaseSettings):
-    # Dozvoljene samo ove vrijednosti
     APP_ENV: Literal["development", "production", "testing"] = "development"
     
     REDIS_URL: str
@@ -19,8 +18,7 @@ class Settings(BaseSettings):
     INFOBIP_SENDER_NUMBER: str
     INFOBIP_SECRET_KEY: str
 
-    # Konfiguracija: 'extra="forbid"' znači da će se app srušiti
-    # ako u .env imaš varijable koje nisu ovdje definirane (sprječava nered)
+
     model_config = SettingsConfigDict(env_file=".env", extra="forbid")
 
 @lru_cache()

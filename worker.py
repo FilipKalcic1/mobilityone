@@ -9,7 +9,7 @@ from services.queue import QueueService, QUEUE_OUTBOUND, QUEUE_SCHEDULE
 
 settings = get_settings()
 
-# Konfiguracija logera za JSON output (lakše za Kibanu/Datadog)
+
 structlog.configure(
     processors=[
         structlog.processors.TimeStamper(fmt="iso"),
@@ -25,34 +25,34 @@ class WhatsappWorker:
         self.redis = None
         self.http = None
         self.queue = None
-        self.running = True # Zastavica za kontrolu petlje
+        self.running = True
 
     async def start(self):
-        # Inicijalizacija resursa
+
         self.redis = redis.from_url(settings.REDIS_URL, decode_responses=True)
         self.http = httpx.AsyncClient(timeout=15.0)
         self.queue = QueueService(self.redis)
         
         logger.info("Worker started", env=settings.APP_ENV)
 
-        # Glavna petlja
+
         while self.running:
             try:
-                # Paralelno provjeravamo oba reda (izlazni i retry)
+
                 await self._process_outbound()
                 await self._process_retries()
             except Exception as e:
-                # Hvata neočekivane greške da se worker ne sruši
+
                 logger.error("Critical loop error", error=str(e))
                 await asyncio.sleep(1)
         
-        # Kad running postane False, čistimo resurse
+
         await self.shutdown()
 
     async def _process_outbound(self):
         if not self.running: return
         
-        # BLPOP čeka 1 sekundu. To omogućuje da svake sekunde provjerimo self.running
+
         task = await self.redis.blpop(QUEUE_OUTBOUND, timeout=1)
         if not task: return
 
@@ -60,7 +60,7 @@ class WhatsappWorker:
         cid = payload.get("cid", "unknown")
         to_number = payload.get("to")
         
-        # Vežemo logger za ovaj konkretan zadatak
+
         log = logger.bind(cid=cid, to=to_number)
         
         try:
@@ -68,21 +68,17 @@ class WhatsappWorker:
             log.info("Message sent successfully")
         except Exception as e:
             log.warn("Send failed, scheduling retry", error=str(e))
-            # Ako slanje ne uspije, vrati u retry red
             await self.queue.schedule_retry(payload)
 
     async def _process_retries(self):
         if not self.running: return
         
         now = asyncio.get_event_loop().time()
-        # Dohvati zadatke kojima je prošlo vrijeme čekanja
         tasks = await self.redis.zrangebyscore(QUEUE_SCHEDULE, 0, now, start=0, num=1)
         
         if tasks:
-            # Atomski ukloni iz ZSET-a da ga drugi workeri ne uzmu
             if await self.redis.zrem(QUEUE_SCHEDULE, tasks[0]):
                 data = json.loads(tasks[0])
-                # Vrati u glavni red za slanje
                 await self.queue.enqueue(data['to'], data['text'], data.get('cid'), data['attempts'])
 
     async def _send_infobip(self, payload):
@@ -97,7 +93,7 @@ class WhatsappWorker:
             "content": {"text": payload['text']}
         }
         resp = await self.http.post(url, json=body, headers=headers)
-        resp.raise_for_status() # Baca grešku ako nije 2xx
+        resp.raise_for_status() 
 
     async def shutdown(self):
         logger.info("Shutting down worker...")
@@ -109,7 +105,6 @@ class WhatsappWorker:
 async def main():
     worker = WhatsappWorker()
     
-    # Postavljamo hvatanje signala (Ctrl+C ili Docker Stop)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, lambda: setattr(worker, 'running', False))

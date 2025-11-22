@@ -9,7 +9,7 @@ logger = structlog.get_logger("security")
 async def validate_infobip_signature(request: Request, x_hub_signature: str = Header(None)):
     settings = get_settings()
     
-    # Dev bypass
+
     if settings.APP_ENV != "production" and not x_hub_signature:
         logger.warning("Security skipped (DEV MODE)")
         return

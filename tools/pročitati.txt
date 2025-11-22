@@ -1,0 +1,4 @@
+želim samo reći da je ovo mock up nije kako će to stvarno izgledati jedino što je isto
+je struktura files ali sam kod nije sličan ali služi svrsi. Znam kako bi napravio
+prave files ako bi imao potrebne podatke ali ih nemam pa zato radim ovako.Koristit
+cu wrapper strukturu zbog jednog izvora istine i lakše implemetacije. 

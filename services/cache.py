@@ -10,7 +10,6 @@ class CacheService:
         self.redis = redis_client
 
     async def get_or_compute(self, key: str, func: Callable, *args, ttl: int = 60) -> Any:
-        # 1. Pokušaj dohvat iz Redisa
         try:
             cached = await self.redis.get(key)
             if cached:
@@ -18,12 +17,12 @@ class CacheService:
         except Exception as e:
             logger.warning("Redis unavailable, skipping cache read", error=str(e))
 
-        # 2. Izračunaj vrijednost (skupa operacija)
+
         result = await func(*args)
 
-        # 3. Spremi u Redis
+
         try:
-            if result: # Ne keširaj prazne rezultate/greške
+            if result: 
                 await self.redis.setex(key, ttl, json.dumps(result))
         except Exception as e:
             logger.warning("Redis unavailable, skipping cache write", error=str(e))

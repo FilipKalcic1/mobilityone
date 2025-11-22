@@ -32,5 +32,5 @@ class ContextService:
     async def get_history(self, sender: str) -> List[dict]:
         key = self._key(sender)
         raw_data = await self.redis.lrange(key, 0, -1)
-        # Vraćamo format spreman za OpenAI (samo role i content)
+
         return [json.loads(m) for m in raw_data]

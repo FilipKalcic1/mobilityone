@@ -15,11 +15,11 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+
     redis_client = redis.from_url(settings.REDIS_URL, encoding="utf-8", decode_responses=True)
     await FastAPILimiter.init(redis_client)
     
-    # Inject services into app state
+
     app.state.redis = redis_client
     app.state.queue = QueueService(redis_client)
     app.state.cache = CacheService(redis_client)
@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # Shutdown
+
     await redis_client.close()
 
 app = FastAPI(lifespan=lifespan)

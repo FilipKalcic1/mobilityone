@@ -65,3 +65,7 @@ Sljedivost (Traceability): Uveden correlation_id koji prati svaki zahtjev od ula
 Sigurnost (Security): Implementirana HMAC-SHA256 validacija potpisa za osiguranje integriteta svih dolaznih webhook zahtjeva.
 
 Konfiguracijska strogost: Korištenje Pydantic modela za strogu validaciju environment varijabli, sprječavajući pokretanje sustava s neispravnom konfiguracijom.
+
+
+
+!! TREBA KUPITI INFOBIP BROJ KAKO BI RADILO 

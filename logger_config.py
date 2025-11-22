@@ -11,5 +11,5 @@ def configure_logger():
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
     )
-    # Preusmjeravamo uvicorn/fastapi logove na naš format
+
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=logging.INFO)
