@@ -12,7 +12,7 @@ logger = structlog.get_logger("tool_registry")
 settings = get_settings()
 
 class ToolRegistry:
-    # Prima Redis klijent u konstruktoru
+
     def __init__(self, redis_client: redis.Redis):
         self.tools_map = {}      
         self.tools_vectors = []  
@@ -42,13 +42,13 @@ class ToolRegistry:
                     op_id = details.get('operationId', f"{method}_{path}")
                     description = details.get('summary', '') + " " + details.get('description', '')
                     
-                    # --- REDIS CACHING LOGIKA ---
+
                     desc_hash = hashlib.md5(description.encode('utf-8')).hexdigest()
                     cache_key = f"tool_embedding:{op_id}:{desc_hash}"
 
                     vector = None
                     
-                    # Provjeri Redis
+
                     cached_data = await self.redis.get(cache_key)
                     
                     if cached_data:
@@ -56,7 +56,7 @@ class ToolRegistry:
                     else:
                         logger.info("Computing new embedding", tool=op_id)
                         vector = await self._get_embedding(description)
-                        # Spremi u Redis
+
                         await self.redis.set(cache_key, json.dumps(vector))
                     
                     self.tools_map[op_id] = {
@@ -100,15 +100,54 @@ class ToolRegistry:
         return response.data[0].embedding
 
     def _create_openai_schema(self, name, description, details):
+        """
+        Parsira Swagger parametre i requestBody u OpenAI function schema format.
+        """
+        properties = {}
+        required_fields = []
+
+        if "parameters" in details:
+            for param in details["parameters"]:
+                param_name = param.get("name")
+
+                param_schema = param.get("schema", {})
+                param_type = param_schema.get("type", "string")
+                param_desc = param.get("description", "")
+
+                properties[param_name] = {
+                    "type": param_type,
+                    "description": param_desc
+                }
+
+                if param.get("required", False):
+                    required_fields.append(param_name)
+
+        
+        if "requestBody" in details:
+            content = details["requestBody"].get("content", {})
+            
+            json_schema = content.get("application/json", {}).get("schema", {})
+            
+            
+            if "properties" in json_schema:
+                for prop_name, prop_def in json_schema["properties"].items():
+                    properties[prop_name] = {
+                        "type": prop_def.get("type", "string"),
+                        "description": prop_def.get("description", "")
+                    }
+                    
+                    if prop_name in json_schema.get("required", []):
+                        required_fields.append(prop_name)
+
         return {
             "type": "function",
             "function": {
                 "name": name,
                 "description": description,
                 "parameters": {
-                    "type": "object", 
-                    "properties": {}, 
-                    "required": []
+                    "type": "object",
+                    "properties": properties,
+                    "required": required_fields
                 }
             }
         }

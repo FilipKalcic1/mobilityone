@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
         app.state.context = ContextService(redis_client)
         
         logger.info("Loading Tool Registry...")
-        # --- BITNO: Prosljeđujemo redis_client ---
+
         registry = ToolRegistry(redis_client)
         
         try:

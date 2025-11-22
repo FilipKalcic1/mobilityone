@@ -4,7 +4,7 @@ from typing import Dict, Any, TypedDict, Optional
 
 logger = structlog.get_logger("openapi_bridge")
 
-# --- NOVO: Definiramo točnu strukturu Tool definicije ---
+
 class ToolDefinition(TypedDict):
     path: str
     method: str
