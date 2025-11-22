@@ -19,14 +19,14 @@ class OpenAPIGateway:
         self.base_url = base_url.rstrip('/')
         self.limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
         
-        # [NOVO] Postavljanje Authorization headera na klijenta ako token postoji
+
         headers = {}
         if settings.MOBILITY_API_TOKEN:
-            # Pretpostavlja se Bearer shema.
+
             headers["Authorization"] = f"Bearer {settings.MOBILITY_API_TOKEN}"
             logger.info("API Gateway initialized with Authorization header")
 
-        # [MODIFICIRANO] AsyncClient inicijaliziran s defaultnim headerima
+
         self.client = httpx.AsyncClient(timeout=20.0, limits=self.limits, headers=headers)
 
     async def execute_tool(self, tool_def: ToolDefinition, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -57,7 +57,7 @@ class OpenAPIGateway:
         log.info("API Request started")
 
         try:
-            # Klijent (self.client) već ima Authorization header postavljen u __init__
+
             response = await self.client.request(method, full_url, **request_kwargs)
             response.raise_for_status()
             return response.json()
