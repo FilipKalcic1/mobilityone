@@ -15,14 +15,13 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-
     labels:
       - "autoheal=true"
 
   api:
     build: .
     container_name: fleet_api
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --proxy-headers
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers
     volumes:
       - .:/app
     ports:
@@ -34,8 +33,9 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379
+    # Healthcheck koristi curl koji smo dodali u Dockerfile
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"] ### 
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -45,7 +45,14 @@ services:
 
   worker:
     build: .
-    container_name: fleet_worker
+    # OBRISANO: container_name: fleet_worker 
+    # (Mora biti obrisano da bi mogli imati više kopija)
+    
+    # NOVO: Definiramo da želimo npr. 2 workera odmah pri startu
+    deploy:
+      mode: replicated
+      replicas: 2
+      
     command: python worker.py
     volumes:
       - .:/app
@@ -58,7 +65,14 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379
-
+    # Healthcheck provjerava heartbeat u Redisu
+    healthcheck:
+      test: ["CMD", "redis-cli", "get", "worker:heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "autoheal=true"
 
   autoheal:
     image: willfarrell/autoheal

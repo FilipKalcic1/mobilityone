@@ -9,6 +9,7 @@ logger = structlog.get_logger("queue")
 QUEUE_OUTBOUND = "whatsapp_outbound"
 QUEUE_SCHEDULE = "schedule_retry"
 QUEUE_DLQ = "whatsapp_dlq"
+QUEUE_INBOUND = "whatsapp_inbound" # <--- NOVO
 
 class QueueService:
     def __init__(self, redis_client: redis.Redis):
@@ -26,11 +27,17 @@ class QueueService:
         })
         await self.redis.rpush(QUEUE_OUTBOUND, payload)
 
+    # <--- NOVO: Metoda za dolazne poruke
+    async def enqueue_inbound(self, sender: str, text: str, message_id: str):
+        payload = json.dumps({
+            "sender": sender,
+            "text": text,
+            "message_id": message_id,
+            "timestamp": asyncio.get_event_loop().time()
+        })
+        await self.redis.rpush(QUEUE_INBOUND, payload)
+
     async def schedule_retry(self, payload: dict):
-        """
-        Pokušava ponovno poslati poruku s eksponencijalnim odmakom.
-        Ako ne uspije 5 puta, šalje u DLQ.
-        """
         attempts = payload.get('attempts', 0) + 1
         
         if attempts >= 5:
@@ -38,7 +45,6 @@ class QueueService:
             await self.move_to_dlq(payload)
             return 
 
-        # Exponential Backoff (2s, 4s, 8s...)
         delay = 2 ** attempts
         payload['attempts'] = attempts
         
@@ -49,7 +55,6 @@ class QueueService:
             {json.dumps(payload): execute_at}
         )
 
-    async def move_to_dlq(self, payload: dict):
-        """Sprema propalu poruku u DLQ za ručnu analizu."""
+    async def move_to_dlq(self, payload: dict): 
         payload['failed_at'] = asyncio.get_event_loop().time()
         await self.redis.rpush(QUEUE_DLQ, json.dumps(payload))

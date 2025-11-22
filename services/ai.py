@@ -8,7 +8,6 @@ settings = get_settings()
 logger = structlog.get_logger("ai")
 client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
-
 SYSTEM_PROMPT = """
 Ti si odgovoran i oprezan AI asistent za upravljanje voznim parkom (MobilityOne).
 Tvoj cilj je točno izvršavati zadatke koristeći dostupne alate.
@@ -31,34 +30,36 @@ Tvoj cilj je točno izvršavati zadatke koristeći dostupne alate.
 async def analyze_intent(
     history: List[Dict], 
     current_text: str, 
-    tools: List[Dict] = None
+    tools: List[Dict] = None,
+    retry_count: int = 0 # <--- NOVO: Brojač pokušaja
 ) -> Dict[str, Any]:
     """
     Šalje upit OpenAI modelu. 
-    Zahvaljujući SYSTEM_PROMPT-u, model sam odlučuje hoće li odmah pozvati alat 
-    ili će prvo vratiti tekstualno pitanje za potvrdu.
+    Sadrži logiku za automatski retry u slučaju neispravnog JSON formata.
     """
+    
+    # Sigurnosni limit da ne uđemo u beskonačnu rekurziju
+    if retry_count > 1:
+        logger.error("Max retries reached for JSON correction")
+        return {"tool": None, "response_text": "Došlo je do tehničke greške u obradi podataka."}
+
     if not current_text:
         return {"tool": None, "response_text": ""}
-
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     
     for h in history:
-
         role = "assistant" if h.get("role") == "assistant" else "user"
         messages.append({"role": role, "content": h.get("content")})
     
     messages.append({"role": "user", "content": current_text})
 
     try:
-
         call_args = {
             "model": settings.OPENAI_MODEL,
             "messages": messages,
             "temperature": 0, 
         }
-
 
         if tools:
             call_args["tools"] = tools
@@ -67,7 +68,7 @@ async def analyze_intent(
         response = await client.chat.completions.create(**call_args)
         msg = response.choices[0].message
         
-
+        # Ako AI želi pozvati alat
         if msg.tool_calls:
             tool_call = msg.tool_calls[0]
             function_name = tool_call.function.name
@@ -76,9 +77,10 @@ async def analyze_intent(
             try:
                 parameters = json.loads(arguments_str)
             except json.JSONDecodeError:
-
-                logger.error("AI generated invalid JSON parameters", raw=arguments_str)
-                return {"tool": None, "response_text": "Došlo je do tehničke greške u formatu podataka."}
+                # <--- SELF-CORRECTION LOOP
+                logger.warning("AI generated invalid JSON parameters, retrying...", raw=arguments_str, attempt=retry_count)
+                # Ponovno pozivamo funkciju, povećavajući retry_count
+                return await analyze_intent(history, current_text, tools, retry_count + 1)
 
             logger.info("AI selected tool", tool=function_name)
             return {
@@ -87,7 +89,7 @@ async def analyze_intent(
                 "response_text": None
             }
             
-
+        # Običan tekstualni odgovor
         return {
             "tool": None,
             "parameters": {},
