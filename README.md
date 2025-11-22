@@ -1,8 +1,13 @@
-1. Environment Setup
-Kreiraj .env u rootu i popuni varijable iz config.py:
 
-Bash
+---
 
+# Dev Setup 
+
+## 1. Environment Setup
+
+Kreiraj `.env` u rootu i popuni varijable iz `config.py`:
+
+```bash
 APP_ENV=development
 REDIS_URL=redis://redis:6379
 
@@ -15,20 +20,29 @@ INFOBIP_SECRET_KEY=... # HMAC secret
 
 # Upstream API
 MOBILITY_API_URL=... # Base URL vanjskog API-ja
-2. Dependencies
-Osiguraj da je swagger.json prisutan u root direktoriju (app crasha ako ga nema jer ga ToolRegistry parsa pri startupu).
+```
 
-3. Build & Run
+## 2. Dependencies
+
+Osiguraj da je **`swagger.json`** prisutan u root direktoriju (app crasha ako ga nema jer ga `ToolRegistry` parsa pri startupu).
+
+## 3. Build & Run
+
 Koristi Docker Compose za API, Worker i Redis stack:
 
-Bash
-
+```bash
 docker-compose up --build -d
-4. Networking & Webhook
-Exposeaj port 8000 i registriraj webhook na Infobipu:
+```
 
-Bash
+## 4. Networking & Webhook
 
+Exposeaj port `8000` i registriraj webhook na Infobipu:
+
+```bash
 ngrok http 8000
-Webhook Endpoint: POST <ngrok_url>/webhook/whatsapp Healthcheck: GET /health
+```
 
+**Webhook Endpoint:** `POST <ngrok_url>/webhook/whatsapp`
+**Healthcheck:** `GET /health`
+
+---
