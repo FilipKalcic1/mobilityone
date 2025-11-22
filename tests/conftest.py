@@ -9,6 +9,8 @@ from services.queue import QueueService
 from services.cache import CacheService
 from services.context import ContextService
 
+from routers.webhook import get_queue, get_context, get_registry, get_gateway
+
 class FakeRedis:
     def __init__(self):
         self.data = {}    
@@ -31,22 +33,15 @@ class FakeRedis:
     
     async def lrange(self, key, start, end): 
         lst = self.lists.get(key, [])
-        # Redis lrange is inclusive, python slice is exclusive
         if end == -1: return lst[start:]
         return lst[start:end+1]
 
     async def ltrim(self, key, start, end):
-        """
-        Ovo je popravljena logika koja zapravo reže listu.
-        Redis LTRIM zadržava elemente unutar raspona.
-        """
         if key not in self.lists: return True
-        
         lst = self.lists[key]
         if end == -1:
             self.lists[key] = lst[start:]
         else:
-
             self.lists[key] = lst[start:end+1]
         return True
 
@@ -76,28 +71,44 @@ def redis_client():
 @pytest_asyncio.fixture
 async def async_client(redis_client):
 
-    app.state.redis = redis_client
-    app.state.queue = QueueService(redis_client)
-    app.state.cache = CacheService(redis_client)
-    app.state.context = ContextService(redis_client)
+    queue_service = QueueService(redis_client)
+    cache_service = CacheService(redis_client)
+    context_service = ContextService(redis_client)
     
 
     mock_registry = MagicMock()
     mock_registry.find_relevant_tools = AsyncMock(return_value=[])
+
     mock_registry.tools_map = {
         "get_vehicle_location": {
             "path": "/vehicles/loc", "method": "GET", "description": "Test tool"
         }
     }
-    app.state.tool_registry = mock_registry
 
     mock_gateway = MagicMock()
     mock_gateway.execute_tool = AsyncMock(return_value={"status": "mocked_success"})
-    app.state.api_gateway = mock_gateway
+    
+
+    app.dependency_overrides[get_queue] = lambda: queue_service
+    app.dependency_overrides[get_context] = lambda: context_service
+    app.dependency_overrides[get_registry] = lambda: mock_registry
+    app.dependency_overrides[get_gateway] = lambda: mock_gateway
     
 
     await FastAPILimiter.init(redis_client)
     
+
+    app.state.redis = redis_client
+    app.state.queue = queue_service
+    app.state.cache = cache_service
+    app.state.context = context_service
+
+    app.state.api_gateway = mock_gateway 
+    app.state.tool_registry = mock_registry 
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+    
+
+    app.dependency_overrides = {}

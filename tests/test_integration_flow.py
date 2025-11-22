@@ -1,13 +1,11 @@
 import pytest
 from unittest.mock import patch
 import json
-from main import app 
+from main import app
+from routers.webhook import get_gateway, get_registry 
 
 @pytest.mark.asyncio
 async def test_webhook_end_to_end(async_client, redis_client):
-    """
-    Simulira puni flow: Webhook -> Registry -> AI -> Gateway -> Queue
-    """
     payload = {
         "results": [{
             "from": "38591234567",
@@ -15,7 +13,6 @@ async def test_webhook_end_to_end(async_client, redis_client):
             "messageId": "msg-1"
         }]
     }
-
 
     mock_ai_response = {
         "tool": "get_vehicle_location",
@@ -27,12 +24,13 @@ async def test_webhook_end_to_end(async_client, redis_client):
          patch("routers.webhook.validate_infobip_signature", return_value=None):
          
 
-        registry_mock = app.state.tool_registry
+        registry_mock = app.dependency_overrides[get_registry]()
+        
+
         registry_mock.find_relevant_tools.return_value = [
             {"type": "function", "function": {"name": "get_vehicle_location"}}
         ]
         
-
         response = await async_client.post("/webhook/whatsapp", json=payload)
 
         assert response.status_code == 200
@@ -40,7 +38,9 @@ async def test_webhook_end_to_end(async_client, redis_client):
         assert data["status"] == "queued"
 
 
-        gateway_mock = app.state.api_gateway
+        gateway_mock = app.dependency_overrides[get_gateway]()
+        
+
         gateway_mock.execute_tool.assert_called_once()
         
         assert await redis_client.llen("whatsapp_outbound") == 1

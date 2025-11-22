@@ -1,71 +1,85 @@
-## 🚀 Upute za pokretanje sustava
+````markdown
+# MobilityOne Fleet AI
 
-Slijedite ove korake striktnim redoslijedom kako biste podigli mikroservis u produkcijskom ili testnom okruženju.
+WhatsApp mikroservis za upravljanje voznim parkom. Dokument služi kao sažeta tehnička uputa za konfiguraciju, pokretanje i održavanje sustava.
 
-## Konfiguracija okoline
-Kreirajte datoteku .env u korijenskom direktoriju projekta i unesite produkcijske varijable (bez suvišnih/starih ključeva):
+---
 
-## Isječak koda
+## Značajke
 
+* Semantički router za dinamičko pronalaženje relevantnih API operacija putem vektorske pretrage OpenAPI definicije.
+* Sigurnosni sloj koji zahtijeva izričitu potvrdu korisnika prije izvršavanja POST/DELETE operacija.
+* Asinkrona obrada poruka putem Redis workera; webhook služi isključivo za prijem.
+* API-agnostičan rad kroz učitavanje `swagger.json` datoteke.
+* Dead Letter Queue i korisnički rate-limiting radi stabilnosti sustava.
+
+---
+
+## Tehnološki stack
+
+* Python 3.11 + FastAPI  
+* Redis 7  
+* OpenAI GPT modeli + embeddings  
+* Infobip WhatsApp API  
+
+---
+
+## Konfiguracija (.env)
+
+Kreirati `.env` datoteku u korijenu:
+
+```bash
 APP_ENV=production
-
 REDIS_URL=redis://redis:6379
 
-OPENAI_API_KEY=sk-proj-...
+# AI
+OPENAI_API_KEY=sk-...
 
+# Infobip (WhatsApp)
 INFOBIP_BASE_URL=xxxxx.api.infobip.com
-
 INFOBIP_API_KEY=...
-
 INFOBIP_SENDER_NUMBER=...
-
 INFOBIP_SECRET_KEY=...
 
-## Podizanje kontejnera
- 
-Izvršite izgradnju i pokretanje Docker servisa u pozadini:
+# Backend API
+MOBILITY_API_URL=https://api.mobilityone.com/v1
+````
 
-Bash
+---
 
-docker-compose up --build -d
+## Preduvjeti
 
-## Verifikacija servisa
+U korijenu mora postojati `swagger.json` s OpenAPI specifikacijom backend sustava.
 
-Provjerite status servisa pozivom na Health Check endpoint:
+---
 
-Bash
+## Pokretanje
 
-curl http://localhost:8000/health
- 
- #Očekivani odgovor: {"status": "ok", "service": "whatsapp-webhook"}
+```bash
+docker-compose up --build --scale worker=5
+```
 
-## Izlaganje Webhooka (Samo za lokalni razvoj)
+Aplikacija: `http://localhost:8000`
+Health check: `http://localhost:8000/health`
 
-Ako se sustav ne nalazi na javnoj IP adresi, uspostavite tunel:
+---
 
-Bash
+## Struktura projekta
 
-ngrok http 8000
-Kopirajte generirani HTTPS URL u Infobip postavke broja (Forwarding sekcija): 
-https://<vas-ngrok-id>.ngrok-free.app/webhook/whatsapp
-## Rezime aplikacije
+```text
+mobilityone/
+├── main.py                # Ulazna točka sustava
+├── worker.py              # Asinkroni obrađivač poruka
+├── swagger.json           # OpenAPI definicija
+├── routers/               # Webhook endpointi
+├── services/
+│   ├── tool_registry.py   # Vektorska pretraga alata
+│   ├── openapi_bridge.py  # Dinamički API klijent
+│   ├── ai.py              # AI logika i sigurnosni sloj
+│   ├── queue.py           # Redis queue i DLQ
+│   └── context.py         # Sliding-window kontekst
+└── docker-compose.yml     # Infrastruktura
+```
 
-Implementirane su sljedeće ključne arhitektonske i funkcionalne komponente:
-
-Asinkrona arhitektura: Razdvojena logika na API Gateway (Webhook) za brzi prijem poruka i Worker servis za tešku obradu, povezani putem Redisa.
-
-Dvosmjerna komunikacija (2-Way Messaging): Potpuna integracija s Infobip WhatsApp API-jem za primanje upita i slanje odgovora korisnicima.
-
-Inteligentna obrada (NLP): Integracija OpenAI modela za prepoznavanje namjere korisnika (Intent Recognition) i ekstrakciju parametara iz prirodnog jezika.
-
-Sustav otpornosti (Reliability): Implementiran Exponential Backoff mehanizam za automatski ponovni pokušaj slanja poruka u slučaju mrežnih grešaka.
-
-Sljedivost (Traceability): Uveden correlation_id koji prati svaki zahtjev od ulaska u webhook do konačne obrade, omogućujući precizno praćenje grešaka u logovima.
-
-Sigurnost (Security): Implementirana HMAC-SHA256 validacija potpisa za osiguranje integriteta svih dolaznih webhook zahtjeva.
-
-Konfiguracijska strogost: Korištenje Pydantic modela za strogu validaciju environment varijabli, sprječavajući pokretanje sustava s neispravnom konfiguracijom.
-
-
-
-!! TREBA KUPITI INFOBIP BROJ KAKO BI RADILO 
+```
+```

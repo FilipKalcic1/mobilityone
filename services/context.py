@@ -4,8 +4,8 @@ import json
 from typing import List
 from pydantic import BaseModel
 
-CONTEXT_TTL = 1800
-MAX_HISTORY_LENGTH = 10
+CONTEXT_TTL = 3600 
+MAX_MESSAGES = 15  
 
 class Message(BaseModel):
     role: str
@@ -25,12 +25,15 @@ class ContextService:
         
         async with self.redis.pipeline() as pipe:
             await pipe.rpush(key, msg.model_dump_json())
-            await pipe.ltrim(key, -MAX_HISTORY_LENGTH, -1)
+            # Sliding Window: Zadrži samo zadnjih N poruka
+            await pipe.ltrim(key, -MAX_MESSAGES, -1)
             await pipe.expire(key, CONTEXT_TTL)
             await pipe.execute()
 
     async def get_history(self, sender: str) -> List[dict]:
         key = self._key(sender)
         raw_data = await self.redis.lrange(key, 0, -1)
-
         return [json.loads(m) for m in raw_data]
+    
+    async def clear_history(self, sender: str):
+        await self.redis.delete(self._key(sender))

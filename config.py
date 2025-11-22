@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 class Settings(BaseSettings):
     APP_ENV: Literal["development", "production", "testing"] = "development"
@@ -12,10 +12,6 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-3.5-turbo"
     AI_CONFIDENCE_THRESHOLD: float = 0.85
 
-    #mobility one 
-    MOBILITY_API_URL: str  
-    MOBILITY_API_TOKEN: str = None 
-
     # Infobip
     INFOBIP_BASE_URL: str
     INFOBIP_API_KEY: str
@@ -23,7 +19,10 @@ class Settings(BaseSettings):
     INFOBIP_SECRET_KEY: str
 
 
-    model_config = SettingsConfigDict(env_file=".env", extra="forbid")
+    MOBILITY_API_URL: str 
+    MOBILITY_API_TOKEN: Optional[str] = None
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 @lru_cache()
 def get_settings() -> Settings:
