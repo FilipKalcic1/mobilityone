@@ -9,7 +9,7 @@ logger = structlog.get_logger("queue")
 QUEUE_OUTBOUND = "whatsapp_outbound"
 QUEUE_SCHEDULE = "schedule_retry"
 QUEUE_DLQ = "whatsapp_dlq"
-QUEUE_INBOUND = "whatsapp_inbound" # <--- NOVO
+QUEUE_INBOUND = "whatsapp_inbound" 
 
 class QueueService:
     def __init__(self, redis_client: redis.Redis):
@@ -27,7 +27,7 @@ class QueueService:
         })
         await self.redis.rpush(QUEUE_OUTBOUND, payload)
 
-    # <--- NOVO: Metoda za dolazne poruke
+
     async def enqueue_inbound(self, sender: str, text: str, message_id: str):
         payload = json.dumps({
             "sender": sender,

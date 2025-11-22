@@ -19,7 +19,7 @@ class OpenAPIGateway:
         Ne koristi hardkodirane if-else blokove za metode.
         """
         path = tool_def['path']
-        method = tool_def['method'].upper() # httpx voli UPPERCASE (GET, POST...)
+        method = tool_def['method'].upper() 
         
 
         req_data = params.copy()

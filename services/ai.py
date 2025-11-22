@@ -31,14 +31,14 @@ async def analyze_intent(
     history: List[Dict], 
     current_text: str, 
     tools: List[Dict] = None,
-    retry_count: int = 0 # <--- NOVO: Brojač pokušaja
+    retry_count: int = 0 
 ) -> Dict[str, Any]:
     """
     Šalje upit OpenAI modelu. 
     Sadrži logiku za automatski retry u slučaju neispravnog JSON formata.
     """
     
-    # Sigurnosni limit da ne uđemo u beskonačnu rekurziju
+
     if retry_count > 1:
         logger.error("Max retries reached for JSON correction")
         return {"tool": None, "response_text": "Došlo je do tehničke greške u obradi podataka."}
@@ -68,7 +68,7 @@ async def analyze_intent(
         response = await client.chat.completions.create(**call_args)
         msg = response.choices[0].message
         
-        # Ako AI želi pozvati alat
+        
         if msg.tool_calls:
             tool_call = msg.tool_calls[0]
             function_name = tool_call.function.name
@@ -77,9 +77,9 @@ async def analyze_intent(
             try:
                 parameters = json.loads(arguments_str)
             except json.JSONDecodeError:
-                # <--- SELF-CORRECTION LOOP
+                
                 logger.warning("AI generated invalid JSON parameters, retrying...", raw=arguments_str, attempt=retry_count)
-                # Ponovno pozivamo funkciju, povećavajući retry_count
+                
                 return await analyze_intent(history, current_text, tools, retry_count + 1)
 
             logger.info("AI selected tool", tool=function_name)
@@ -89,7 +89,7 @@ async def analyze_intent(
                 "response_text": None
             }
             
-        # Običan tekstualni odgovor
+        
         return {
             "tool": None,
             "parameters": {},

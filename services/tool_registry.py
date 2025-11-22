@@ -11,9 +11,9 @@ settings = get_settings()
 
 class ToolRegistry:
     def __init__(self):
-        self.tools_map = {}      # Tu čuvamo detalje alata (kako se zove, koji URL)
-        self.tools_vectors = []  # Tu čuvamo "brojeve" (vektore) za pretragu
-        self.tools_names = []    # Popis imena da znamo koji vektor pripada kome
+        self.tools_map = {}     
+        self.tools_vectors = []  
+        self.tools_names = []    
         self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
     async def load_swagger(self, url_or_path: str):
@@ -24,7 +24,7 @@ class ToolRegistry:
         logger.info("Loading Swagger definitions...", source=url_or_path)
         
         try:
-            # Ako počinje s http, skini s neta. Inače čitaj lokalni file.
+
             if url_or_path.startswith("http"):
                 async with httpx.AsyncClient() as client:
                     spec = (await client.get(url_or_path)).json()
@@ -32,26 +32,25 @@ class ToolRegistry:
                 with open(url_or_path, 'r', encoding='utf-8') as f:
                     spec = json.load(f)
 
-            # Iteriraj kroz sve funkcije u Swaggeru
+
             for path, methods in spec.get('paths', {}).items():
                 for method, details in methods.items():
-                    # Preskoči ako nije prava metoda
+
                     if method not in ['get', 'post', 'put', 'delete']:
                         continue
 
                     op_id = details.get('operationId', f"{method}_{path}")
                     description = details.get('summary', '') + " " + details.get('description', '')
                     
-                    # --- OVDJE SE DOGAĐA MAGIJA ---
-                    # Pretvaramo opis funkcije u brojeve (vektor)
+
                     vector = await self._get_embedding(description)
                     
-                    # Spremamo u memoriju
+
                     self.tools_map[op_id] = {
                         "path": path,
                         "method": method,
                         "description": description,
-                        # Ovdje ćemo kasnije dodati parsiranje parametara
+                       
                         "openai_schema": self._create_openai_schema(op_id, description, details)
                     }
                     self.tools_vectors.append(vector)
@@ -92,7 +91,7 @@ class ToolRegistry:
         text = text.replace("\n", " ")
         response = await self.client.embeddings.create(
             input=[text], 
-            model="text-embedding-3-small" # Najjeftiniji i brz model
+            model="text-embedding-3-small" 
         )
         return response.data[0].embedding
 
@@ -105,7 +104,7 @@ class ToolRegistry:
                 "description": description,
                 "parameters": {
                     "type": "object", 
-                    "properties": {}, # Ovdje ćemo kasnije dodati logiku za parametre
+                    "properties": {}, 
                     "required": []
                 }
             }
