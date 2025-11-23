@@ -3,6 +3,7 @@ import pytest_asyncio
 from unittest.mock import MagicMock, AsyncMock
 from httpx import AsyncClient, ASGITransport
 from fastapi_limiter import FastAPILimiter
+import fnmatch  # Za keys matching
 
 from main import app
 from services.queue import QueueService
@@ -18,11 +19,16 @@ class FakeRedis:
         self.sets = {}     
 
     async def get(self, key): return self.data.get(key)
-    async def set(self, key, value): self.data[key] = value; return True
+    async def set(self, key, value, *args, **kwargs): self.data[key] = value; return True
     async def setex(self, key, time, value): self.data[key] = value; return True
     async def delete(self, key): 
         if key in self.data: del self.data[key]
         return 1
+
+    # [FIX] Dodana metoda keys za ToolRegistry testove
+    async def keys(self, pattern="*"):
+        # Jednostavna implementacija glob matchinga
+        return [k for k in self.data.keys() if fnmatch.fnmatch(k, pattern)]
 
     async def rpush(self, key, value):
         if key not in self.lists: self.lists[key] = []
@@ -70,15 +76,12 @@ def redis_client():
 
 @pytest_asyncio.fixture
 async def async_client(redis_client):
-
     queue_service = QueueService(redis_client)
     cache_service = CacheService(redis_client)
     context_service = ContextService(redis_client)
     
-
     mock_registry = MagicMock()
     mock_registry.find_relevant_tools = AsyncMock(return_value=[])
-
     mock_registry.tools_map = {
         "get_vehicle_location": {
             "path": "/vehicles/loc", "method": "GET", "description": "Test tool"
@@ -88,21 +91,17 @@ async def async_client(redis_client):
     mock_gateway = MagicMock()
     mock_gateway.execute_tool = AsyncMock(return_value={"status": "mocked_success"})
     
-
     app.dependency_overrides[get_queue] = lambda: queue_service
     app.dependency_overrides[get_context] = lambda: context_service
     app.dependency_overrides[get_registry] = lambda: mock_registry
     app.dependency_overrides[get_gateway] = lambda: mock_gateway
     
-
     await FastAPILimiter.init(redis_client)
     
-
     app.state.redis = redis_client
     app.state.queue = queue_service
     app.state.cache = cache_service
     app.state.context = context_service
-
     app.state.api_gateway = mock_gateway 
     app.state.tool_registry = mock_registry 
 
@@ -110,5 +109,4 @@ async def async_client(redis_client):
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
     
-
     app.dependency_overrides = {}
