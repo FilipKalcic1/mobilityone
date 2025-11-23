@@ -46,10 +46,12 @@ services:
     build: .
     deploy:
       mode: replicated
-      replicas: 2
+      replicas: 1  # [IZMJENA] Postavljeno na 1 zbog mapiranja porta 8001
     command: python worker.py
     volumes:
       - .:/app
+    ports:
+      - "8001:8001" # [NOVO] Prometheus metrics endpoint
     depends_on:
       redis:
         condition: service_healthy
@@ -59,8 +61,7 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379
-    # --- POPRAVAK OVDJE ---
-    # Dodano "-h redis" da alat zna gdje je baza
+    # Healthcheck provjerava heartbeat u Redisu koristeći redis-tools instaliran u Dockerfileu
     healthcheck:
       test: ["CMD", "redis-cli", "-h", "redis", "get", "worker:heartbeat"]
       interval: 10s

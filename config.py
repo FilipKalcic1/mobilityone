@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     
     REDIS_URL: str
     
+    SWAGGER_URL: Optional[str] = None
     # OpenAI
     OPENAI_API_KEY: str
     OPENAI_MODEL: str = "gpt-3.5-turbo"
