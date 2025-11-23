@@ -21,6 +21,7 @@ class OpenAPIGateway:
         
 
         headers = {}
+        
         if settings.MOBILITY_API_TOKEN:
 
             headers["Authorization"] = f"Bearer {settings.MOBILITY_API_TOKEN}"

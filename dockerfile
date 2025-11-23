@@ -5,8 +5,8 @@ RUN useradd -m -u 1000 appuser
 
 WORKDIR /app
 
-# NOVO: Instalacija curla za healthcheck (i čišćenje cachea da image ostane mali)
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# POPRAVAK: Instalacija redis-tools omogućuje 'redis-cli' za healthcheck!
+RUN apt-get update && apt-get install -y curl redis-tools && rm -rf /var/lib/apt/lists/*
 
 # Prvo kopiramo requirements radi cachiranja layera
 COPY requirements.txt .

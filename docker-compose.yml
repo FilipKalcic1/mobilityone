@@ -33,7 +33,6 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379
-    # Healthcheck koristi curl koji smo dodali u Dockerfile
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
@@ -45,14 +44,9 @@ services:
 
   worker:
     build: .
-    # OBRISANO: container_name: fleet_worker 
-    # (Mora biti obrisano da bi mogli imati više kopija)
-    
-    # NOVO: Definiramo da želimo npr. 2 workera odmah pri startu
     deploy:
       mode: replicated
       replicas: 2
-      
     command: python worker.py
     volumes:
       - .:/app
@@ -65,9 +59,10 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379
-    # Healthcheck provjerava heartbeat u Redisu
+    # --- POPRAVAK OVDJE ---
+    # Dodano "-h redis" da alat zna gdje je baza
     healthcheck:
-      test: ["CMD", "redis-cli", "get", "worker:heartbeat"]
+      test: ["CMD", "redis-cli", "-h", "redis", "get", "worker:heartbeat"]
       interval: 10s
       timeout: 5s
       retries: 3

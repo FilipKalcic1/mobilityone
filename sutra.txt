@@ -1,0 +1,46 @@
+    Sustav je izuzetno kvalitetan, ali nije savršen (10/10) zbog dvije ključne arhitektonske i implementacijske točke koje nose rizik u produkcijskom okruženju, posebno u pogledu **robosnosti kritičnih dijelova** i **korisničkog iskustva (UX)**.
+
+    Evo detaljnog objašnjenja zašto nije 10/10:
+
+    ### 1. Nedovoljno robusno rukovanje ključnim konfiguracijskim datotekama (Robusnost pri pokretanju)
+
+    Kod pri pokretanju (u `main.py` i `worker.py`) zahtijeva datoteku `swagger.json` za učitavanje `ToolRegistry` alata.
+
+    Ako ta datoteka nedostaje:
+
+    * **API (main.py):** Program eksplicitno izbacuje `FileNotFoundError` i zaustavlja cijelo pokretanje s kritičnom porukom.
+    * **Zaključak za 10/10:** U vrhunskim produkcijskim sustavima, kritične datoteke trebale bi biti dohvaćene s redundantnog i sigurnog izvora (npr. iz **object storage-a** ili **managed configuration service-a**) ili bi sustav trebao imati robustan mehanizam **generiranja datoteke** pri prvom pokretanju, a ne se rušiti s `FileNotFoundError`.
+
+    ### 2. Nedostatak povratne petlje za AI obradu rezultata alata (Korisničko iskustvo - UX)
+
+    Nakon što AI model odabere i Worker izvrši neki alat putem `OpenAPIGateway-a`, Worker šalje odgovor natrag korisniku u tehničkom formatu.
+
+    Trenutna logika u `worker.py` koristi raw JSON iz API rezultata u poruci:
+    `final_response_text = f"✅ *Status:* Uspjeh\n📦 *Podaci:* {json.dumps(api_result, ensure_ascii=False)}"`
+
+    * **Kršenje vlastitog pravila:** Ovaj pristup rezultira time da korisnik, čak i u slučaju uspjeha, dobije *raw JSON* objekt. To je u suprotnosti sa sistemskim promptom koji nalaže AI asistentu da bude **"kratak, profesionalan i direktan"**.
+    * **Zaključak za 10/10:** Za savršeno korisničko iskustvo, Worker bi trebao rezultat (`api_result`) vratiti natrag LLM-u (npr. kao `tool_response` u idućem koraku razgovora) kako bi LLM mogao taj JSON objekt pretvoriti u prirodnu, razumljivu poruku (npr. "Vozilo ZG-123 je na lokaciji X, stanje računa je Y kn."). Nedostatak ove petlje narušava primarnu svrhu AI asistenta.
+
+    Iako je arhitektura s Redis queuingom i sigurnosnom validacijom izvrsna, ove dvije točke sprečavaju ocjenu 10/10 za sustav namijenjen produkciji.
+
+    Na temelju detaljne analize koda, arhitekture i konfiguracije, uključujući korištenje modernih asinkronih servisa (FastAPI, Redis, AsyncIO), testova i modularne strukture, projekt zaslužuje sljedeću ocjenu:
+
+    ## Ocjena: 4/5 (Vrlo dobar)
+
+    Projekt ima snažan temelj, čistu arhitekturu, dobru modularnost i implementiranu osnovnu logiku keširanja i asinkronog rada. Ipak, kritični propusti u pouzdanosti, monitoringu i logici rukovanja greškama sprečavaju ga da dobije ocjenu 5/5.
+
+    ### Sažetak ocjene po kategorijama:
+
+    | Kategorija | Ocjena | Obrazloženje |
+    | :--- | :--- | :--- |
+    | **Arhitektura** | **5** | Jasna podjela na API i Worker, modularni servisi (Cache, Queue, Context, Bridge), asinkroni pristup. |
+    | **Čistoća i Testabilnost Koda** | **5** | Visoka razina testova (jedinice i integracija), dobra struktura klasa i funkcija. |
+    | **Pouzdanost i Otpornost (Reliability)** | **3** | **Kritični nedostatak:** Nema Dead Letter Queue (DLQ) mehanizma za *ulazne* WhatsApp poruke (`whatsapp_inbound` red), što može dovesti do trajnog gubitka poruka uslijed greške u Workeru. |
+    | **Sigurnost** | **3** | **Visoki rizik:** Funkcija za validaciju Infobip potpisa je *namjerno isključena* ako `APP_ENV` nije "production", ostavljajući potencijalnu rupu ako se ENV varijabla pogrešno postavi u produkciji. |
+    | **Infrastruktura i Monitoring** | **3** | **Kritični nedostatak:** Healthcheck Worker replika je nepouzdan jer sve instance pišu u isti ključ (`worker:heartbeat`). |
+
+    ### Ključni popravci za ocjenu 5/5:
+
+    1.  **Riješiti DLQ za Worker:** Implementirati mehanizam ponovnog pokušaja i DLQ za poruke preuzete iz `QUEUE_INBOUND` kako bi se spriječio gubitak podataka.
+    2.  **Popraviti Healthcheck:** Svaki Worker mora pisati u svoj jedinstveni "heartbeat" ključ (npr. `worker:heartbeat:worker-1`) kako bi Docker/K8s sustav ispravno detektirao pad pojedinačne instance.
+    3.  **Ispraviti logiku AI odgovora:** Worker mora provjeriti je li u `api_result` greška (`"error": True`) i na temelju toga poslati korisniku odgovarajuću poruku, umjesto da uvijek šalje "✅ Status: Uspjeh".

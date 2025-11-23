@@ -2,11 +2,14 @@ import asyncio
 import json
 import httpx
 import signal
+import uuid
+import socket
 import redis.asyncio as redis
 import structlog
+from contextlib import asynccontextmanager
 from config import get_settings
 from logger_config import configure_logger  
-from services.queue import QueueService, QUEUE_OUTBOUND, QUEUE_SCHEDULE, QUEUE_INBOUND
+from services.queue import QueueService, QUEUE_OUTBOUND, QUEUE_SCHEDULE, QUEUE_INBOUND, QUEUE_DLQ
 from services.context import ContextService
 from services.tool_registry import ToolRegistry
 from services.openapi_bridge import OpenAPIGateway
@@ -16,24 +19,46 @@ settings = get_settings()
 configure_logger()
 logger = structlog.get_logger("worker")
 
-# --- Funkcija za maskiranje osjetljivih podataka ---
+# --- KONSTANTE ZA SIGURNOST ---
+SENSITIVE_LOG_KEYS = {
+    'email', 'phone', 'password', 'token', 'authorization', 
+    'secret', 'apikey', 'access_token', 'refresh_token', 'pin', 'cvv', 'to'
+}
+
 def sanitize_log_data(data: dict) -> dict:
+    """
+    Rekurzivno maskira osjetljive ključeve za sigurno logiranje.
+    Koristi 'Early Return' za čitljivost.
+    """
+    if not isinstance(data, dict):
+        return data
+        
     clean_data = {}
-    SENSITIVE_KEYS = {'email', 'phone', 'password', 'token', 'authorization', 'secret', 'apikey'}
-    
     for k, v in data.items():
-        if k.lower() in SENSITIVE_KEYS:
+        if k.lower() in SENSITIVE_LOG_KEYS:
             clean_data[k] = "***MASKED***"
-        elif isinstance(v, dict):
+            continue
+            
+        if isinstance(v, dict):
             clean_data[k] = sanitize_log_data(v)
-        elif isinstance(v, str) and len(v) > 200:
-            clean_data[k] = v[:200] + "...(truncated)"
-        else:
-            clean_data[k] = v
+            continue
+            
+        if isinstance(v, list):
+            clean_data[k] = [sanitize_log_data(i) if isinstance(i, dict) else i for i in v]
+            continue
+            
+        if isinstance(v, str) and len(v) > 500:
+            clean_data[k] = v[:500] + "...(truncated)"
+            continue
+            
+        clean_data[k] = v
+        
     return clean_data
 
 class WhatsappWorker:
     def __init__(self):
+        self.worker_id = str(uuid.uuid4())[:8]
+        self.hostname = socket.gethostname()
         self.redis = None
         self.http = None
         self.queue = None
@@ -43,27 +68,32 @@ class WhatsappWorker:
         self.running = True
 
     async def start(self):
-        """Pokreće worker proces."""
+        """Inicijalizacija resursa i glavna petlja."""
+        logger.info("Inicijalizacija workera...", id=self.worker_id)
+        
         self.redis = redis.from_url(settings.REDIS_URL, decode_responses=True)
         self.http = httpx.AsyncClient(timeout=15.0)
         self.queue = QueueService(self.redis)
         self.context = ContextService(self.redis)
         
-        # --- BITNO: Prosljeđujemo self.redis u ToolRegistry ---
+        # Graceful load - ne ruši se ako fali swagger
         self.registry = ToolRegistry(self.redis)
-        try:
-            await self.registry.load_swagger("swagger.json")
-        except Exception as e:
-            logger.error("Failed to load swagger in worker", error=str(e))
+        await self.registry.load_swagger("swagger.json")
 
         if settings.MOBILITY_API_URL:
              self.gateway = OpenAPIGateway(base_url=settings.MOBILITY_API_URL)
         
-        logger.info("Worker started", env=settings.APP_ENV)
+        logger.info("Worker spreman.", host=self.hostname, id=self.worker_id)
 
         while self.running:
+            # --- HEALTHCHECK FIX ---
+            # 1. Legacy ključ za Docker Healthcheck (da Docker ne ubija container)
+            await self.redis.setex("worker:heartbeat", 30, "alive")
+            
+            # 2. Precizni ključ za monitoring (Grafana/Admin panel)
+            await self.redis.setex(f"worker:heartbeat:{self.hostname}:{self.worker_id}", 30, "alive")
+            
             try:
-                await self.redis.setex("worker:heartbeat", 30, "alive")
                 await asyncio.gather(
                     self._process_outbound(),
                     self._process_retries(),
@@ -72,64 +102,130 @@ class WhatsappWorker:
                 )
                 await asyncio.sleep(0.1) 
             except Exception as e:
-                logger.error("Critical loop error", error=str(e))
+                logger.error("Kritična greška u petlji", error=str(e))
                 await asyncio.sleep(1)
+        
         await self.shutdown()
+
+    @asynccontextmanager
+    async def _distributed_lock(self, resource_id: str, ttl_ms: int = 10000):
+        """Redis Distributed Lock za sprječavanje race-conditiona."""
+        lock_key = f"lock:msg:{resource_id}"
+        token = str(uuid.uuid4())
+        
+        if not await self.redis.set(lock_key, token, nx=True, px=ttl_ms):
+            yield False
+            return
+
+        try:
+            yield True
+        finally:
+            # Lua skripta za sigurno brisanje samo našeg tokena
+            script = """
+            if redis.call("get", KEYS[1]) == ARGV[1] then
+                return redis.call("del", KEYS[1])
+            else
+                return 0
+            end
+            """
+            await self.redis.eval(script, 1, lock_key, token)
 
     async def _process_inbound(self):
         if not self.running: return
-
         task = await self.redis.blpop(QUEUE_INBOUND, timeout=1)
         if not task: return
 
+        raw_data = task[1]
         try:
-            payload = json.loads(task[1])
-            sender = payload['sender']
-            user_text = payload['text']
+            payload = json.loads(raw_data)
+            message_id = payload.get('message_id', 'unknown')
             
-            # Sigurnije logiranje
-            log_ctx = {"sender": sender}
-            if settings.APP_ENV == "development":
-                log_ctx["text_preview"] = user_text[:50] 
-            
-            log = logger.bind(**log_ctx)
-            log.info("Processing inbound message")
-
-            await self.context.add_message(sender, "user", user_text)
-            relevant_tools = await self.registry.find_relevant_tools(user_text, top_k=5)
-            history = await self.context.get_history(sender)
-            ai_decision = await analyze_intent(history[:-1], user_text, tools=relevant_tools)
-            
-            final_response_text = ""
-
-            if ai_decision.get("tool"):
-                tool_name = ai_decision["tool"]
-                params = ai_decision["parameters"]
-                
-                log.info("Executing tool", tool=tool_name)
-                
-                tool_def = self.registry.tools_map.get(tool_name)
-                if tool_def and self.gateway:
-                    api_result = await self.gateway.execute_tool(tool_def, params)
-                    
-                    # Logiramo samo sanitizirane podatke
-                    if not api_result.get("error"):
-                        log.info("Tool execution success", 
-                                 result_preview=sanitize_log_data(api_result))
-                    else:
-                        log.warning("Tool execution failed", error_info=api_result)
-
-                    final_response_text = f"✅ *Status:* Uspjeh\n📦 *Podaci:* {json.dumps(api_result, ensure_ascii=False)}"
+            # Zaključaj obradu poruke
+            async with self._distributed_lock(message_id) as locked:
+                if locked:
+                    await self._handle_message_logic(payload)
                 else:
-                    final_response_text = "⚠️ Greška: Alat nedostupan."
-            else:
-                final_response_text = ai_decision.get("response_text", "Nisam razumio upit.")
-
-            await self.context.add_message(sender, "assistant", final_response_text)
-            await self.queue.enqueue(sender, final_response_text)
-
+                    logger.warning("Poruka zaključana na drugom workeru", msg_id=message_id)
         except Exception as e:
-            logger.error("Error processing inbound", error=str(e))
+            logger.error("Greška obrade inbound poruke", error=str(e))
+            await self._handle_inbound_failure(raw_data, payload if 'payload' in locals() else {})
+
+    async def _handle_inbound_failure(self, raw_data: str, payload: dict):
+        attempts = payload.get("retry_count", 0) + 1
+        if attempts >= 3:
+            logger.error("Poruka prebačena u DLQ (Max retries).", payload=sanitize_log_data(payload))
+            await self.redis.rpush(QUEUE_DLQ, raw_data)
+        else:
+            payload["retry_count"] = attempts
+            logger.info("Zakazujem retry ulazne poruke", attempt=attempts)
+            await self.redis.rpush(QUEUE_INBOUND, json.dumps(payload))
+
+    async def _handle_message_logic(self, payload: dict):
+        """Poslovna logika: User -> AI -> [Tool -> AI] -> Response"""
+        sender = payload['sender']
+        user_text = payload['text']
+        logger.info("Početak obrade", sender=sender)
+
+        if not self.registry.is_ready:
+            await self.queue.enqueue(sender, "Sustav se ažurira (Alati nedostupni). Pokušajte kasnije.")
+            return
+
+        await self.context.add_message(sender, "user", user_text)
+        
+        # AI Loop (do 3 koraka)
+        for _ in range(3):
+            should_continue = await self._execute_ai_step(sender, user_text)
+            if not should_continue:
+                return
+
+        await self.queue.enqueue(sender, "Zahtjev je previše složen. Molimo pojednostavite.")
+
+    async def _execute_ai_step(self, sender: str, user_text: str) -> bool:
+        """Jedan korak odlučivanja AI modela."""
+        history = await self.context.get_history(sender)
+        tools = await self.registry.find_relevant_tools(user_text)
+        
+        decision = await analyze_intent(history, None, tools=tools)
+        
+        # Slučaj A: AI treba alat
+        if decision.get("tool"):
+            await self._execute_tool_call(sender, decision)
+            return True # Nastavi petlju
+
+        # Slučaj B: AI daje odgovor
+        response = self._ensure_text_response(decision.get("response_text"))
+        await self.context.add_message(sender, "assistant", response)
+        await self.queue.enqueue(sender, response)
+        return False # Kraj
+
+    async def _execute_tool_call(self, sender: str, decision: dict):
+        tool_name = decision["tool"]
+        params = decision["parameters"]
+        
+        logger.info("AI poziva alat", tool=tool_name, params=sanitize_log_data(params))
+        
+        tool_def = self.registry.tools_map.get(tool_name)
+        if not tool_def or not self.gateway:
+            err = json.dumps({"error": "Tool not found"})
+            await self.context.add_message(sender, "function", err, name=tool_name)
+            return
+
+        api_result = await self.gateway.execute_tool(tool_def, params)
+        logger.info("Rezultat alata", tool=tool_name, result=sanitize_log_data(api_result))
+
+        # Vraćamo rezultat AI-u (ne korisniku)
+        tool_msg = json.dumps(api_result, ensure_ascii=False)
+        await self.context.add_message(sender, "function", tool_msg, name=tool_name)
+
+    def _ensure_text_response(self, raw_response: str) -> str:
+        """Validacija da AI nije vratio JSON."""
+        if not raw_response: return "Nisam razumio."
+        try:
+            if isinstance(json.loads(raw_response), dict):
+                return "Akcija izvršena, ali nisam uspio generirati sažetak."
+        except:
+            pass
+        return raw_response
 
     async def _process_outbound(self):
         if not self.running: return
@@ -137,45 +233,34 @@ class WhatsappWorker:
         if not task: return
         try:
             payload = json.loads(task[1])
-            cid = payload.get("cid", "unknown")
-            try:
-                await self._send_infobip(payload)
-            except Exception as e:
-                logger.warn("Send failed", error=str(e))
-                await self.queue.schedule_retry(payload)
-        except json.JSONDecodeError:
-            pass
+            await self._send_infobip(payload)
+        except Exception as e:
+            logger.warning("Outbound fail", error=str(e))
+            await self.queue.schedule_retry(payload)
 
     async def _process_retries(self):
         if not self.running: return
         now = asyncio.get_event_loop().time()
         tasks = await self.redis.zrangebyscore(QUEUE_SCHEDULE, 0, now, start=0, num=1)
-        if tasks:
-            task_str = tasks[0]
-            if await self.redis.zrem(QUEUE_SCHEDULE, task_str):
-                data = json.loads(task_str)
-                await self.queue.enqueue(data['to'], data['text'], data.get('cid'), data['attempts'])
+        if tasks and await self.redis.zrem(QUEUE_SCHEDULE, tasks[0]):
+            data = json.loads(tasks[0])
+            await self.queue.enqueue(data['to'], data['text'], data.get('cid'), data['attempts'])
 
     async def _send_infobip(self, payload):
         url = f"https://{settings.INFOBIP_BASE_URL}/whatsapp/1/message/text"
-        headers = {
-            "Authorization": f"App {settings.INFOBIP_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        body = {
-            "from": settings.INFOBIP_SENDER_NUMBER,
-            "to": payload['to'],
-            "content": {"text": payload['text']}
-        }
+        headers = {"Authorization": f"App {settings.INFOBIP_API_KEY}", "Content-Type": "application/json"}
+        body = {"from": settings.INFOBIP_SENDER_NUMBER, "to": payload['to'], "content": {"text": payload['text']}}
+        
+        logger.info("Šaljem poruku", to="***MASKED***")
         resp = await self.http.post(url, json=body, headers=headers)
         resp.raise_for_status()
 
     async def shutdown(self):
-        logger.info("Shutting down worker...")
+        logger.info("Gašenje workera...")
         if self.http: await self.http.aclose()
         if self.gateway: await self.gateway.close()
         if self.redis: await self.redis.aclose()
-        logger.info("Worker stopped.")
+        logger.info("Worker zaustavljen.")
 
 async def main():
     worker = WhatsappWorker()
