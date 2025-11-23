@@ -11,3 +11,4 @@ structlog==24.1.0
 async-lru==2.0.4
 numpy==1.26.4
 tiktoken==0.6.0
+orjson>=3.9.10  

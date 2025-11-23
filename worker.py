@@ -1,5 +1,5 @@
 import asyncio
-import json
+import orjson  # [FIX] Zamjena za spori 'json' modul
 import httpx
 import signal
 import uuid
@@ -28,7 +28,6 @@ SENSITIVE_LOG_KEYS = {
 def sanitize_log_data(data: dict) -> dict:
     """
     Rekurzivno maskira osjetljive ključeve za sigurno logiranje.
-    Koristi 'Early Return' za čitljivost.
     """
     if not isinstance(data, dict):
         return data
@@ -76,9 +75,12 @@ class WhatsappWorker:
         self.queue = QueueService(self.redis)
         self.context = ContextService(self.redis)
         
-        # Graceful load - ne ruši se ako fali swagger
+        # Graceful load - ne ruši se ako fali swagger, samo logira grešku
         self.registry = ToolRegistry(self.redis)
-        await self.registry.load_swagger("swagger.json")
+        try:
+            await self.registry.load_swagger("swagger.json")
+        except Exception as e:
+            logger.error("Failed to load tools definition", error=str(e))
 
         if settings.MOBILITY_API_URL:
              self.gateway = OpenAPIGateway(base_url=settings.MOBILITY_API_URL)
@@ -86,12 +88,12 @@ class WhatsappWorker:
         logger.info("Worker spreman.", host=self.hostname, id=self.worker_id)
 
         while self.running:
-            # --- HEALTHCHECK FIX ---
-            # 1. Legacy ključ za Docker Healthcheck (da Docker ne ubija container)
+
             await self.redis.setex("worker:heartbeat", 30, "alive")
             
-            # 2. Precizni ključ za monitoring (Grafana/Admin panel)
+
             await self.redis.setex(f"worker:heartbeat:{self.hostname}:{self.worker_id}", 30, "alive")
+
             
             try:
                 await asyncio.gather(
@@ -100,7 +102,7 @@ class WhatsappWorker:
                     self._process_inbound(),
                     return_exceptions=True 
                 )
-                await asyncio.sleep(0.1) 
+                await asyncio.sleep(0.05) 
             except Exception as e:
                 logger.error("Kritična greška u petlji", error=str(e))
                 await asyncio.sleep(1)
@@ -137,7 +139,8 @@ class WhatsappWorker:
 
         raw_data = task[1]
         try:
-            payload = json.loads(raw_data)
+            # [FIX] orjson.loads umjesto json.loads
+            payload = orjson.loads(raw_data)
             message_id = payload.get('message_id', 'unknown')
             
             # Zaključaj obradu poruke
@@ -158,7 +161,8 @@ class WhatsappWorker:
         else:
             payload["retry_count"] = attempts
             logger.info("Zakazujem retry ulazne poruke", attempt=attempts)
-            await self.redis.rpush(QUEUE_INBOUND, json.dumps(payload))
+            # [FIX] orjson.dumps vraća bytes, decode u string za Redis
+            await self.redis.rpush(QUEUE_INBOUND, orjson.dumps(payload).decode('utf-8'))
 
     async def _handle_message_logic(self, payload: dict):
         """Poslovna logika: User -> AI -> [Tool -> AI] -> Response"""
@@ -170,58 +174,97 @@ class WhatsappWorker:
             await self.queue.enqueue(sender, "Sustav se ažurira (Alati nedostupni). Pokušajte kasnije.")
             return
 
+
         await self.context.add_message(sender, "user", user_text)
         
-        # AI Loop (do 3 koraka)
-        for _ in range(3):
-            should_continue = await self._execute_ai_step(sender, user_text)
+
+        for step in range(3):
+
+            current_input = user_text if step == 0 else None
+            
+            should_continue = await self._execute_ai_step(sender, current_input)
             if not should_continue:
                 return
 
         await self.queue.enqueue(sender, "Zahtjev je previše složen. Molimo pojednostavite.")
 
-    async def _execute_ai_step(self, sender: str, user_text: str) -> bool:
+    async def _execute_ai_step(self, sender: str, user_text: str | None) -> bool:
         """Jedan korak odlučivanja AI modela."""
         history = await self.context.get_history(sender)
-        tools = await self.registry.find_relevant_tools(user_text)
         
-        decision = await analyze_intent(history, None, tools=tools)
-        
-        # Slučaj A: AI treba alat
-        if decision.get("tool"):
-            await self._execute_tool_call(sender, decision)
-            return True # Nastavi petlju
 
-        # Slučaj B: AI daje odgovor
+        search_query = user_text
+        if not search_query:
+            for msg in reversed(history):
+                if msg['role'] == 'user':
+                    search_query = msg.get('content')
+                    break
+        
+        tools = await self.registry.find_relevant_tools(search_query or "help")
+        
+
+        decision = await analyze_intent(history, user_text, tools=tools)
+        
+
+        if decision.get("tool"):
+
+            raw_calls = decision.get("raw_tool_calls", [])
+            tool_calls_dict = [t.model_dump() for t in raw_calls] if raw_calls else []
+
+            await self.context.add_message(
+                sender, 
+                "assistant", 
+                content=None, 
+                tool_calls=tool_calls_dict
+            )
+            
+
+            await self._execute_tool_call(sender, decision)
+            return True 
+
+
         response = self._ensure_text_response(decision.get("response_text"))
-        await self.context.add_message(sender, "assistant", response)
-        await self.queue.enqueue(sender, response)
-        return False # Kraj
+        if response:
+            await self.context.add_message(sender, "assistant", response)
+            await self.queue.enqueue(sender, response)
+        
+        return False 
 
     async def _execute_tool_call(self, sender: str, decision: dict):
         tool_name = decision["tool"]
         params = decision["parameters"]
+
+        call_id = decision.get("tool_call_id")
         
         logger.info("AI poziva alat", tool=tool_name, params=sanitize_log_data(params))
         
         tool_def = self.registry.tools_map.get(tool_name)
         if not tool_def or not self.gateway:
-            err = json.dumps({"error": "Tool not found"})
-            await self.context.add_message(sender, "function", err, name=tool_name)
+            err = orjson.dumps({"error": "Tool not found"}).decode('utf-8')
+
+            await self.context.add_message(sender, "tool", err, tool_call_id=call_id, name=tool_name)
             return
 
         api_result = await self.gateway.execute_tool(tool_def, params)
         logger.info("Rezultat alata", tool=tool_name, result=sanitize_log_data(api_result))
 
-        # Vraćamo rezultat AI-u (ne korisniku)
-        tool_msg = json.dumps(api_result, ensure_ascii=False)
-        await self.context.add_message(sender, "function", tool_msg, name=tool_name)
+
+        tool_msg = orjson.dumps(api_result).decode('utf-8')
+        
+        await self.context.add_message(
+            sender, 
+            "tool", 
+            tool_msg, 
+            tool_call_id=call_id, 
+            name=tool_name
+        )
 
     def _ensure_text_response(self, raw_response: str) -> str:
         """Validacija da AI nije vratio JSON."""
         if not raw_response: return "Nisam razumio."
         try:
-            if isinstance(json.loads(raw_response), dict):
+
+            if isinstance(orjson.loads(raw_response), dict):
                 return "Akcija izvršena, ali nisam uspio generirati sažetak."
         except:
             pass
@@ -232,18 +275,21 @@ class WhatsappWorker:
         task = await self.redis.blpop(QUEUE_OUTBOUND, timeout=1)
         if not task: return
         try:
-            payload = json.loads(task[1])
+
+            payload = orjson.loads(task[1])
             await self._send_infobip(payload)
         except Exception as e:
             logger.warning("Outbound fail", error=str(e))
-            await self.queue.schedule_retry(payload)
+            if 'payload' in locals():
+                await self.queue.schedule_retry(payload)
 
     async def _process_retries(self):
         if not self.running: return
         now = asyncio.get_event_loop().time()
         tasks = await self.redis.zrangebyscore(QUEUE_SCHEDULE, 0, now, start=0, num=1)
         if tasks and await self.redis.zrem(QUEUE_SCHEDULE, tasks[0]):
-            data = json.loads(tasks[0])
+
+            data = orjson.loads(tasks[0])
             await self.queue.enqueue(data['to'], data['text'], data.get('cid'), data['attempts'])
 
     async def _send_infobip(self, payload):
