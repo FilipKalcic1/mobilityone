@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'fleet_worker'
+    static_configs:
+      - targets: ['worker:8001']

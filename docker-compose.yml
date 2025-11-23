@@ -46,12 +46,12 @@ services:
     build: .
     deploy:
       mode: replicated
-      replicas: 1  # [IZMJENA] Postavljeno na 1 zbog mapiranja porta 8001
+      replicas: 1
     command: python worker.py
     volumes:
       - .:/app
     ports:
-      - "8001:8001" # [NOVO] Prometheus metrics endpoint
+      - "8001:8001" # Prometheus metrics endpoint
     depends_on:
       redis:
         condition: service_healthy
@@ -61,7 +61,6 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379
-    # Healthcheck provjerava heartbeat u Redisu koristeći redis-tools instaliran u Dockerfileu
     healthcheck:
       test: ["CMD", "redis-cli", "-h", "redis", "get", "worker:heartbeat"]
       interval: 10s
@@ -79,5 +78,38 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
+  # --- MONITORING STACK ---
+  prometheus:
+    image: prom/prometheus
+    container_name: fleet_prometheus
+    restart: always
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus # Čuva podatke pri restartu
+    # U produkciji ne moraš otvarati port 9090 prema van, 
+    # jer Grafana komunicira s njim unutar Docker mreže.
+    # Ostavljamo ga ovdje ako želiš debugirati.
+    ports:
+      - "9090:9090" 
+    depends_on:
+      - worker
+
+  grafana:
+    image: grafana/grafana
+    container_name: fleet_grafana
+    restart: always
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      # Ovdje čita lozinku iz tvoje .env datoteke
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana # Čuva dashboarde pri restartu
+
 volumes:
   redis_data:
+  prometheus_data: # Novo
+  grafana_data:    # Novo
