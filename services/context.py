@@ -12,6 +12,7 @@ logger = structlog.get_logger("context")
 settings = get_settings()
 
 # --- KONFIGURACIJA KONTEKSTA ---
+
 CONTEXT_TTL = 3600  # Vrijeme trajanja sesije (1 sat)
 MAX_TOKENS = 2500   # Granica nakon koje pokrećemo sažimanje
 TARGET_TOKENS = 1500 # Ciljana veličina konteksta nakon sažimanja (ostavljamo prostora za nove poruke)
@@ -31,7 +32,7 @@ class ContextService:
         self.redis = redis_client
         # Tiktoken encoder za gpt-3.5/4
         self.encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
-        # Klijent za generiranje sažetaka
+
         self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
     def _key(self, sender: str) -> str:
@@ -51,15 +52,13 @@ class ContextService:
         
         data = orjson.dumps(msg.model_dump(exclude_none=True)).decode('utf-8')
 
-        # Pipeline za atomsku operaciju dodavanja i osvježavanja TTL-a
+
         async with self.redis.pipeline() as pipe:
             await pipe.rpush(key, data)
             await pipe.expire(key, CONTEXT_TTL)
             await pipe.execute()
         
-        # Provjera i sažimanje ako je potrebno
-        # (Pokrećemo kao 'fire-and-forget' ili awaitamo, ovisno o željenoj latenciji. 
-        # Ovdje awaitamo da osiguramo konzistentnost prije idućeg koraka u workeru)
+
         await self._manage_context_size(key)
 
     async def get_history(self, sender: str) -> List[dict]:
@@ -84,18 +83,18 @@ class ContextService:
 
             messages = [orjson.loads(m) for m in raw_data]
             
-            # 1. Izračunaj ukupne tokene
+
             total_tokens = 0
             token_counts = []
             
             for msg in messages:
-                # Računamo tokene sadržaja + malo overhead-a za JSON strukturu
+
                 content = msg.get("content") or ""
-                # Dodajemo i tool calls u izračun ako postoje
+
                 if msg.get("tool_calls"):
                     content += str(msg["tool_calls"])
                 
-                count = len(self.encoding.encode(content)) + 4 # +4 za message overhead
+                count = len(self.encoding.encode(content)) + 4 
                 token_counts.append(count)
                 total_tokens += count
 
@@ -104,8 +103,7 @@ class ContextService:
 
             logger.info("Context limit exceeded, summarizing...", current=total_tokens, max=MAX_TOKENS)
 
-            # 2. Odredi koliko starih poruka treba sažeti
-            # Idemo unazad i zbrajamo tokene dok ne dođemo do TARGET_TOKENS (koje ČUVAMO)
+
             kept_tokens = 0
             split_index = 0
             
@@ -120,18 +118,17 @@ class ContextService:
                 await self.redis.lpop(key)
                 return
 
-            # Poruke koje idu u sažetak (od 0 do split_index)
+
             to_summarize = messages[:split_index]
-            
-            # 3. Generiraj sažetak koristeći LLM
+
             summary_text = await self._generate_summary(to_summarize)
             
             if not summary_text:
-                # Fallback: ako sažimanje ne uspije, samo odreži stare poruke (kao prije)
+
                 await self.redis.ltrim(key, split_index, -1)
                 return
 
-            # 4. Ažuriraj Redis: Obriši stare i ubaci sažetak na početak
+
             summary_msg = Message(
                 role="system", 
                 content=f"PRETHODNI KONTEKST (SAŽETAK): {summary_text}",
@@ -140,10 +137,7 @@ class ContextService:
             summary_data = orjson.dumps(summary_msg.model_dump()).decode('utf-8')
 
             async with self.redis.pipeline() as pipe:
-                # LTRIM zadržava elemente od 'split_index' do kraja (-1)
-                # Stari elementi [0...split_index-1] se brišu
                 await pipe.ltrim(key, split_index, -1)
-                # LPUSH stavlja sažetak na vrh (novi index 0)
                 await pipe.lpush(key, summary_data)
                 await pipe.execute()
             
@@ -151,8 +145,6 @@ class ContextService:
 
         except Exception as e:
             logger.error("Error managing context size", error=str(e))
-            # Sigurnosni mehanizam: ako logika sažimanja pukne, 
-            # prisilno skrati listu da se ne sruši cijeli sustav
             await self.redis.ltrim(key, -20, -1) # Zadrži zadnjih 20
 
     async def _generate_summary(self, messages: List[dict]) -> Optional[str]:

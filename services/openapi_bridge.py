@@ -1,10 +1,10 @@
 import httpx
 import structlog
 from typing import Dict, Any, TypedDict, Optional
-from config import get_settings # [NOVO] Import konfiguracije
+from config import get_settings 
 
 logger = structlog.get_logger("openapi_bridge")
-settings = get_settings() # [NOVO] Dohvaćanje keširanih postavki
+settings = get_settings()
 
 
 class ToolDefinition(TypedDict):

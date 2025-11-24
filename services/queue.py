@@ -11,8 +11,7 @@ QUEUE_OUTBOUND = "whatsapp_outbound"
 QUEUE_SCHEDULE = "schedule_retry"
 QUEUE_DLQ = "whatsapp_dlq"
 
-# [NOVO] Stream za ulazne poruke (zamjenjuje staru listu QUEUE_INBOUND)
-# Koristimo Stream jer on pamti poruke i omogućuje "Ack" potvrdu
+
 STREAM_INBOUND = "whatsapp_stream_inbound" 
 
 class QueueService:
