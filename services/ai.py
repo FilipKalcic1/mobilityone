@@ -93,7 +93,7 @@ async def analyze_intent(
                 logger.warning("AI generated invalid JSON parameters, retrying...", raw=arguments_str, attempt=retry_count)
                 
                 return await analyze_intent(history, current_text, tools, retry_count + 1)
-
+                
             logger.info("AI selected tool", tool=function_name)
             
             return {

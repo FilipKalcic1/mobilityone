@@ -90,25 +90,34 @@ class WhatsappWorker:
         self.context = ContextService(self.redis)
         
         # 2. Inicijalizacija Tool Registryja s Auto-Updateom
+        # 2. Inicijalizacija Tool Registryja
         self.registry = ToolRegistry(self.redis)
-        try:
-            await self.registry.load_swagger("swagger.json")
+        
+        # --- POPRAVAK POČINJE OVDJE ---
+        swagger_url = getattr(settings, "SWAGGER_URL", None)
+        
+        # Logika prioriteta:
+        if swagger_url:
+            # A) Ako imamo URL (Produkcija/Azure), skini odmah s interneta!
+            logger.info("Učitavam alate s URL-a...", url=swagger_url)
+            await self.registry.load_swagger(swagger_url)
             
-            # Provjeravamo postoji li URL za auto-update u configu
-            swagger_url = getattr(settings, "SWAGGER_URL", None)
-            if swagger_url:
-                logger.info("Pokrećem background auto-update alata", url=swagger_url)
-                # Pokrećemo kao background task
-                asyncio.create_task(self.registry.start_auto_update(swagger_url))
-            else:
-                logger.info("SWAGGER_URL nije postavljen, auto-update isključen.")
-
-        except Exception as e:
-            logger.error("Failed to load tools definition", error=str(e))
+            # I pokreni pozadinsko osvježavanje za buduće promjene
+            asyncio.create_task(self.registry.start_auto_update(swagger_url))
+            
+        else:
+            # B) Ako nemamo URL, traži lokalni file (Development backup)
+            logger.info("SWAGGER_URL nije postavljen, tražim lokalni 'swagger.json'")
+            try:
+                await self.registry.load_swagger("swagger.json")
+            except Exception as e:
+                logger.error("Nisam uspio učitati lokalni swagger", error=str(e))
+        # --- KRAJ POPRAVKA ---
 
         if settings.MOBILITY_API_URL:
              self.gateway = OpenAPIGateway(base_url=settings.MOBILITY_API_URL)
-        
+
+             
         # 3. Inicijalizacija Redis Stream Grupe
         try:
             # mkstream=True kreira stream ako ne postoji. ID="$" znači čitaj samo nove poruke.
