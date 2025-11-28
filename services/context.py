@@ -2,7 +2,8 @@ import time
 import orjson
 import tiktoken
 import structlog
-from typing import List, Optional, Dict, Any
+import uuid
+from typing import List, Optional, Union
 import redis.asyncio as redis
 from openai import AsyncOpenAI
 from config import get_settings
@@ -10,46 +11,82 @@ from config import get_settings
 logger = structlog.get_logger("context")
 settings = get_settings()
 
-# --- KONFIGURACIJA MEMORIJE ---
-CONTEXT_TTL = 3600 * 4  # Pamtimo kontekst 4 sata (dovoljno za smjenu)
-MAX_TOKENS = 2500       # Okidač za sažimanje
-TARGET_TOKENS = 1500    # Cilj nakon sažimanja
+# --- KONFIGURACIJA (Optimizirana za produkciju) ---
+CONTEXT_TTL = 3600 * 4   # Pamtimo kontekst 4 sata
+MAX_TOKENS = 2500        # Limit za cijelu povijest razgovora
+TARGET_TOKENS = 1500     # Cilj nakon sažimanja
+MAX_CONTENT_SIZE = 15000 # Limit za jednu poruku (15KB) - štiti od rušenja
 
 class ContextService:
     def __init__(self, redis_client: redis.Redis):
         self.redis = redis_client
-        # Encoder za gpt-3.5/4 (cl100k_base)
         self.encoding = tiktoken.get_encoding("cl100k_base")
         self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
     def _key(self, sender: str) -> str:
         return f"ctx:{sender}"
 
-    async def add_message(self, sender: str, role: str, content: Optional[str], **kwargs):
+    async def add_message(self, sender: str, role: str, content: Union[str, dict, list, None], **kwargs):
         """
-        Dodaje poruku u povijest i atomski upravlja veličinom konteksta.
+        Glavna funkcija za spremanje.
+        Automatski serijalizira objekte i reže preveliki sadržaj radi uštede.
         """
+        
+        # 1. BRZA SERIJALIZACIJA (Pretvaranje u tekst)
+        content_str = ""
+        if content is not None:
+            if isinstance(content, str):
+                content_str = content
+            else:
+                try:
+                    # orjson je najbrži
+                    content_str = orjson.dumps(content).decode('utf-8')
+                except Exception as e:
+                    logger.warning("Serialization failed, using str fallback", error=str(e))
+                    content_str = str(content)
+        
+        # 2. ZAŠTITA OD PREVELIKIH PODATAKA (Gatekeeper)
+        # Ako je poruka prevelika, reže se da ne troši tokene i ne ruši Redis.
+        if len(content_str) > MAX_CONTENT_SIZE:
+            # U produkciji ne spremamo original (štedimo RAM), osim ako smo u dev modu
+            if settings.APP_ENV == "development":
+                debug_id = str(uuid.uuid4())
+                try:
+                    await self.redis.setex(f"debug:overflow:{debug_id}", 3600, content_str)
+                except Exception:
+                    pass
+            else:
+                debug_id = "Production-Log"
+
+            logger.warning("Input truncated", size=len(content_str), limit=MAX_CONTENT_SIZE)
+
+            # AI dobiva samo sažetak
+            content_str = orjson.dumps({
+                "system_note": "Data truncated for performance/safety.",
+                "preview": content_str[:1000] + "... (truncated)"
+            }).decode('utf-8')
+
+        # 3. SPREMANJE U REDIS (Pipeline za brzinu)
         msg = {
             "role": role,
-            "content": content,
+            "content": content_str,
             "timestamp": time.time(),
-            **kwargs # Ovdje ulaze tool_calls, tool_call_id, name
+            **kwargs 
         }
         
         key = self._key(sender)
         data = orjson.dumps(msg).decode('utf-8')
 
-        # Pipeline za atomsku operaciju (Dodaj + Produži TTL)
         async with self.redis.pipeline() as pipe:
             await pipe.rpush(key, data)
             await pipe.expire(key, CONTEXT_TTL)
             await pipe.execute()
-        
-        # Pozadinska provjera limita (Fire & Forget bi bilo idealno, ali await je sigurniji)
+            
+        # Pozadinska provjera ukupnog limita tokena
         await self._enforce_token_limit(key)
 
     async def get_history(self, sender: str) -> List[dict]:
-        """Dohvaća cijelu povijest razgovora."""
+        """Brzo dohvaćanje povijesti."""
         key = self._key(sender)
         try:
             raw_data = await self.redis.lrange(key, 0, -1)
@@ -59,97 +96,82 @@ class ContextService:
             return []
 
     async def clear_history(self, sender: str):
-        """Briše kontekst (npr. na kraju dana ili na zahtjev)."""
         await self.redis.delete(self._key(sender))
 
     async def _enforce_token_limit(self, key: str):
-        """
-        Pametno upravljanje kontekstom:
-        Ako je povijest preduga, sažmi starije poruke pomoću AI-a.
-        """
+        """Pametno sažimanje povijesti ako postane preduga."""
         try:
+            # Brza provjera duljine liste (štedi CPU)
+            list_len = await self.redis.llen(key)
+            if list_len < 5: return 
+
             raw_data = await self.redis.lrange(key, 0, -1)
-            if not raw_data: return
-
             messages = [orjson.loads(m) for m in raw_data]
-            total_tokens = self._count_tokens(messages)
-
-            if total_tokens <= MAX_TOKENS:
+            
+            if self._count_tokens(messages) <= MAX_TOKENS:
                 return
 
-            logger.info("Context limit exceeded, summarizing...", current=total_tokens)
+            logger.info("Context limit exceeded, summarizing...")
 
-            # Strategija: Zadrži zadnjih N poruka koje stanu u TARGET_TOKENS
             kept_tokens = 0
             split_index = 0
             
-            # Idemo unazad od najnovije poruke
+            # Računamo od kraja prema početku
             for i in range(len(messages) - 1, -1, -1):
                 msg_tokens = self._count_tokens([messages[i]])
                 if kept_tokens + msg_tokens > TARGET_TOKENS:
-                    split_index = i + 1 # Sve prije ovoga ide u sažetak
+                    split_index = i + 1 
                     break
                 kept_tokens += msg_tokens
 
-            # Ako nemamo što sažeti (samo par ogromnih poruka), briši najstariju
             if split_index < 2:
                 await self.redis.lpop(key)
                 return
 
-            # Izdvoji poruke za sažimanje
+            # Sažimanje starog dijela pomoću AI
             to_summarize = messages[:split_index]
             summary_text = await self._generate_summary(to_summarize)
             
             if not summary_text:
-                # Fallback: Samo odreži višak
                 await self.redis.ltrim(key, split_index, -1)
                 return
 
-            # Zamijeni stare poruke sažetkom
             summary_msg = {
                 "role": "system",
-                "content": f"SAŽETAK PRETHODNOG RAZGOVORA: {summary_text}",
+                "content": f"SAŽETAK RANIJEG RAZGOVORA: {summary_text}",
                 "timestamp": time.time()
             }
             summary_data = orjson.dumps(summary_msg).decode('utf-8')
 
             async with self.redis.pipeline() as pipe:
-                await pipe.ltrim(key, split_index, -1) # Ostavi nove
-                await pipe.lpush(key, summary_data)    # Ubaci sažetak na vrh
+                await pipe.ltrim(key, split_index, -1) 
+                await pipe.lpush(key, summary_data)    
                 await pipe.execute()
-            
-            logger.info("Context compacted", removed_msgs=split_index)
 
         except Exception as e:
-            logger.error("Context management failed", error=str(e))
-            # Emergency cleanup: Zadrži samo zadnjih 10 poruka
+            logger.error("Context cleanup failed", error=str(e))
+            # Emergency cleanup
             await self.redis.ltrim(key, -10, -1)
 
     def _count_tokens(self, messages: List[dict]) -> int:
-        """Procjenjuje broj tokena u porukama."""
         count = 0
         for msg in messages:
             content = msg.get("content") or ""
-            # Brojimo i tool callove jer troše kontekst
             if msg.get("tool_calls"):
                 content += str(msg["tool_calls"])
             count += len(self.encoding.encode(content)) + 4
         return count
 
     async def _generate_summary(self, messages: List[dict]) -> Optional[str]:
-        """Koristi GPT-3.5 za kreiranje sažetka."""
         try:
             text_block = ""
             for m in messages:
                 role = m.get("role", "unknown")
-                content = m.get("content") or (str(m.get("tool_calls")) if m.get("tool_calls") else "")
+                content = m.get("content") or str(m.get("tool_calls") or "")
                 text_block += f"{role}: {content}\n"
 
-            sys_prompt = (
-                "Sažmi ovaj razgovor. Zadrži ključne informacije: imena, ID-eve, "
-                "brojeve tablica, lokacije i status zadnjeg zahtjeva."
-            )
-
+            # Kratak i jasan prompt za sažimanje
+            sys_prompt = "Sažmi ključne informacije: imena, ID-eve, brojeve, status zadnjeg zahtjeva."
             response = await self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[

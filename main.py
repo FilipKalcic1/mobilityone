@@ -6,6 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from fastapi_limiter import FastAPILimiter
 
+import sentry_sdk
+
 from config import get_settings
 from logger_config import configure_logger
 from services.queue import QueueService
@@ -17,6 +19,20 @@ from routers import webhook
 configure_logger()
 logger = structlog.get_logger("main")
 settings = get_settings()
+
+
+
+# --- SENTRY INICIJALIZACIJA ---
+if settings.SENTRY_DSN:
+    logger.info("Initializing Sentry for API", env=settings.APP_ENV)
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        environment=settings.APP_ENV,
+        traces_sample_rate=1.0 if settings.APP_ENV == "development" else 0.1,
+        profiles_sample_rate=1.0 if settings.APP_ENV == "development" else 0.1,
+        # OBRISANO: enable_logs=True  <-- OVO JE SRUŠILO SUSTAV
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

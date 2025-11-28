@@ -13,8 +13,8 @@ QUEUE_OUTBOUND = "whatsapp_outbound"
 QUEUE_SCHEDULE = "schedule_retry"
 
 # Odvojeni DLQ redovi za lakšu analizu grešaka
-QUEUE_DLQ_OUTBOUND = "dlq:outbound"  # Neuspjela slanja prema WhatsAppu
-QUEUE_DLQ_INBOUND = "dlq:inbound"    # [NOVO] Neuspjele obrade webhooka (otrovne poruke)
+QUEUE_DLQ_OUTBOUND = "dlq:outbound"  
+QUEUE_DLQ_INBOUND = "dlq:inbound"    
 
 class QueueService:
     def __init__(self, redis_client: redis.Redis):

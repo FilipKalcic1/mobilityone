@@ -1,5 +1,13 @@
 version: '3.8'
 
+# --- 1. GLOBALNO OGRANIČENJE LOGOVA (Jako bitno za disk!) ---
+# Ovo sprječava da Docker logovi pojedu sav prostor na disku servera.
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"  # Rotiraj kad file dođe do 10MB
+    max-file: "3"    # Čuvaj samo zadnja 3 filea
+
 services:
   # --- DATA LAYER ---
   redis:
@@ -10,7 +18,8 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --loglevel notice # <--- Smanjeno logiranje
+    logging: *default-logging # <--- Primijeni limit
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -28,10 +37,14 @@ services:
       POSTGRES_USER: appuser
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: mobility_tenants
+      # Dodatno smanjivanje Postgres logova (samo upozorenja)
+      POSTGRES_LOG_MIN_MESSAGES: WARNING # <--- NOVO
+      POSTGRES_LOG_MIN_ERROR_STATEMENT: ERROR # <--- NOVO
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U appuser -d mobility_tenants"]
       interval: 10s
@@ -59,6 +72,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql+asyncpg://appuser:${DB_PASSWORD}@postgres:5432/mobility_tenants
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
@@ -90,6 +104,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql+asyncpg://appuser:${DB_PASSWORD}@postgres:5432/mobility_tenants
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -h redis get worker:heartbeat | grep alive"]
       interval: 10s
@@ -107,11 +122,19 @@ services:
       - AUTOHEAL_CONTAINER_LABEL=all
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    logging: *default-logging
 
   prometheus:
     image: prom/prometheus
     container_name: fleet_prometheus
     restart: always
+    # Dodan flag --log.level=warn da ne spama INFO poruke
+    command: 
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--log.level=warn' # <--- NOVO: Samo upozorenja i greške
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -119,6 +142,7 @@ services:
       - "9090:9090" 
     depends_on:
       - worker
+    logging: *default-logging
 
   grafana:
     image: grafana/grafana
@@ -131,8 +155,13 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      # --- UTIŠAVANJE GRAFANE ---
+      - GF_LOG_MODE=console
+      - GF_LOG_LEVEL=warn           # <--- Samo WARN i ERROR (bilo je info)
+      - GF_SERVER_ROUTER_LOGGING=false # <--- Ne logiraj svaki HTTP request (ogromna ušteda)
     volumes:
       - grafana_data:/var/lib/grafana
+    logging: *default-logging
 
 volumes:
   redis_data:

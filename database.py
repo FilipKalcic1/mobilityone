@@ -23,3 +23,6 @@ AsyncSessionLocal = sessionmaker(
 )
 
 Base = declarative_base()   
+
+
+# treba dodati alembic sljedeće za produkciju ovo je prva verzija pa nema migracija još ali će ih biti 

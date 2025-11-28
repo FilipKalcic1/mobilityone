@@ -10,7 +10,9 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str
     
-    # Database Tuning (Ključno za 5000+ usera)
+    SENTRY_DSN: Optional[str] = None
+
+    # Database Tuning 
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
     DB_POOL_RECYCLE: int = 3600

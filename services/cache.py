@@ -28,7 +28,7 @@ class CacheService:
         # 3. Pokušaj spremanja
         try:
             if result: 
-                # orjson.dumps vraća bytes, decode u str za Redis
+
                 await self.redis.setex(key, ttl, orjson.dumps(result).decode('utf-8'))
         except Exception as e:
             logger.warning("Cache write failed", key=key, error=str(e))
