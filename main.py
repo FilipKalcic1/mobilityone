@@ -1,109 +1,85 @@
+import time
+import structlog
+import redis.asyncio as redis
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-import redis.asyncio as redis
-import time
-import structlog
 from fastapi_limiter import FastAPILimiter
 
-from routers import webhook
 from config import get_settings
 from logger_config import configure_logger
-
 from services.queue import QueueService
-from services.cache import CacheService
 from services.context import ContextService
-from services.tool_registry import ToolRegistry
-from services.openapi_bridge import OpenAPIGateway
 
+# Routeri
+from routers import webhook
+
+# Inicijalizacija loggera odmah
 configure_logger()
 logger = structlog.get_logger("main")
 settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    Upravljanje životnim ciklusom aplikacije (Startup/Shutdown).
+    """
     redis_client = None
-    api_gateway = None
     
     try:
-        logger.info("Connecting to Redis...")
+        logger.info("System startup initiated...")
+        
+        # 1. Redis Konekcija
         redis_client = redis.from_url(settings.REDIS_URL, encoding="utf-8", decode_responses=True)
         await FastAPILimiter.init(redis_client)
-        logger.info("Redis connected successfully")
+        logger.info("Redis connected & Rate Limiter initialized.")
         
+        # 2. Inicijalizacija Servisa (Samo onih koji trebaju API-ju)
+        # Worker ima svoje, API svoje, ali dijele Redis
         app.state.redis = redis_client
         app.state.queue = QueueService(redis_client)
-        app.state.cache = CacheService(redis_client)
-        app.state.context = ContextService(redis_client)
+        # Context i Registry ovdje ne trebaju nužno, ali mogu biti korisni za debug
         
-        logger.info("Loading Tool Registry...")
-        registry = ToolRegistry(redis_client)
-        
-        # [FIX] Ovo sprječava rušenje testa 'test_lifespan_swagger_missing'
-        try:
-            await registry.load_swagger("swagger.json")
-        except FileNotFoundError:
-            logger.error("⚠️ CRITICAL: 'swagger.json' missing! AI Tools will be disabled.")
-        except Exception as e:
-            logger.error(f"⚠️ Error loading tools: {str(e)}")
-
-        app.state.tool_registry = registry
-        
-        if not settings.MOBILITY_API_URL:
-             error_msg = "CRITICAL: MOBILITY_API_URL is missing in configuration (.env)!"
-             logger.critical(error_msg)
-             raise ValueError(error_msg)
-
-        gateway_url = settings.MOBILITY_API_URL
-        logger.info("Initializing API Gateway", target_url=gateway_url)
-
-        api_gateway = OpenAPIGateway(base_url=gateway_url)
-        app.state.api_gateway = api_gateway
-        
-        logger.info("System fully operational", loaded_tools=len(registry.tools_names))
+        logger.info("API is ready to accept traffic.")
+        yield 
         
     except Exception as e:
-        logger.critical("Startup failed", error=str(e))
+        logger.critical("Startup Failed!", error=str(e))
         raise e
-    
-    yield 
-    
-    logger.info("Shutting down services...")
-    if redis_client:
-        await redis_client.close()
-    if api_gateway:
-        await api_gateway.close()
-    logger.info("Shutdown complete.")
+        
+    finally:
+        logger.info("Shutting down API...")
+        if redis_client:
+            await redis_client.close()
+        logger.info("Shutdown complete.")
 
 app = FastAPI(
-    title="MobilityOne Fleet AI",
-    description="Enterprise WhatsApp AI Microservice",
+    title="MobilityOne Fleet AI API",
     version="2.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url=None if settings.APP_ENV == "production" else "/docs" # Sakrij docs u produkciji
 )
 
+# Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 @app.middleware("http")
-async def add_process_time_header(request: Request, call_next):
+async def metrics_middleware(request: Request, call_next):
     start_time = time.time()
     response = await call_next(request)
     process_time = time.time() - start_time
-    response.headers["X-Process-Time"] = str(process_time)
+    response.headers["X-Process-Time"] = f"{process_time:.4f}"
     return response
 
+# Rute
 app.include_router(webhook.router)
 
 @app.get("/health")
 async def health_check():
-    return {
-        "status": "ok", 
-        "service": "fleet-ai-worker",
-        "version": "2.0.0"
-    }
+    """Koristi Docker za provjeru je li servis živ."""
+    return {"status": "ok", "env": settings.APP_ENV}

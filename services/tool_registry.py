@@ -2,7 +2,6 @@ import json
 import httpx
 import structlog
 import hashlib
-import os
 import asyncio
 import numpy as np
 import redis.asyncio as redis
@@ -15,230 +14,159 @@ settings = get_settings()
 
 class ToolRegistry:
     def __init__(self, redis_client: redis.Redis):
+        self.redis = redis_client
+        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        
+        # In-Memory Cache (Fast Access)
         self.tools_map = {}      
         self.tools_vectors = []  
         self.tools_names = []    
-        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-        self.redis = redis_client 
+        
         self.is_ready = False 
-        self.current_hash = None # Za praćenje promjena (ETag/Hash)
+        self.current_hash = None 
 
     async def start_auto_update(self, source_url: str, interval: int = 300):
-        """
-        [NOVO] Pozadinski task koji periodički provjerava ima li novih alata.
-        Omogućuje 'Hot-Reload' bez restartanja containera.
-        """
-        if not source_url or not source_url.startswith("http"):
-            logger.info("Auto-update skipped (lokalna datoteka).")
-            return
+        """Background task za Hot-Reload alata s URL-a."""
+        if not source_url.startswith("http"): return
 
-        logger.info("Starting auto-update watchdog", source=source_url, interval=interval)
-        
+        logger.info("Auto-update watchdog started", source=source_url)
         while True:
             await asyncio.sleep(interval)
             try:
                 async with httpx.AsyncClient() as client:
-                    # Šaljemo HEAD zahtjev da provjerimo je li se file promijenio
-                    resp = await client.head(source_url, timeout=5.0)
-                    remote_etag = resp.headers.get("ETag") or resp.headers.get("Last-Modified")
+                    head = await client.head(source_url)
+                    remote_hash = head.headers.get("ETag") or head.headers.get("Last-Modified")
                     
-                    # Ako server ne podržava ETag, moramo skinuti cijeli file i hashirati ga
-                    if not remote_etag:
-                        resp = await client.get(source_url)
-                        content = resp.content
-                        remote_etag = hashlib.md5(content).hexdigest()
-                    
-                    if remote_etag != self.current_hash:
-                        logger.info("Detektirana nova verzija alata, osvježavam...", new_hash=remote_etag)
+                    if remote_hash != self.current_hash:
+                        logger.info("Detected new Swagger version, reloading...")
                         await self.load_swagger(source_url)
-                        self.current_hash = remote_etag
-                        
+                        self.current_hash = remote_hash
             except Exception as e:
-                logger.warning("Failed to check for tool updates", error=str(e))
+                logger.warning("Auto-update check failed", error=str(e))
 
     async def load_swagger(self, source: str):
-        """
-        Učitava Swagger definicije (Lokalno ili URL) i generira embeddinge.
-        """
-        logger.info("Pokrećem učitavanje definicija alata", source=source)
+        """Učitava Swagger (File ili URL) i generira embeddinge."""
+        logger.info("Loading tools definition...", source=source)
         spec = None
 
-        # --- 1. REMOTE IZVOR (URL) ---
-        if source.startswith("http"):
-            try:
+        try:
+            if source.startswith("http"):
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(source, timeout=10.0)
                     resp.raise_for_status()
                     spec = resp.json()
-                    
-                    # Ažuriramo hash za auto-update logiku
-                    self.current_hash = resp.headers.get("ETag") or hashlib.md5(resp.content).hexdigest()
-                    logger.info("Uspješno dohvaćen Swagger s URL-a")
-            except Exception as e:
-                logger.error("Neuspjeli dohvat s URL-a", error=str(e))
-                # Ako remote ne radi, pokušaj fallback na lokalni cache ako postoji
-                if not self.is_ready:
-                    return 
-
-        # --- 2. LOKALNI IZVOR (File) ---
-        else:
-            try:
+                    self.current_hash = resp.headers.get("ETag")
+            else:
                 with open(source, 'r', encoding='utf-8') as f:
                     spec = json.load(f)
-            except FileNotFoundError:
-                logger.error(f"CRITICAL: Swagger datoteka '{source}' nije pronađena!")
-                return
-            except json.JSONDecodeError:
-                logger.error(f"CRITICAL: Datoteka '{source}' nije validan JSON.")
-                return
+        except Exception as e:
+            logger.error("Failed to load Swagger", source=source, error=str(e))
+            if not self.is_ready: raise e # Ako je prvi start, sruši se.
+            return
 
         if spec:
-            try:
-                # Parsiranje briše stare alate i stavlja nove (Thread-safe u Pythonu zbog GIL-a za dict assign)
-                await self._parse_and_embed(spec)
-                self.is_ready = True
-                logger.info("Učitavanje alata uspješno završeno", tools_count=len(self.tools_names))
-            except Exception as e:
-                logger.critical("Neočekivana greška pri parsiranju alata", error=str(e))
-                # Ako je update neuspješan, zadrži staru verziju (self.is_ready ostaje True ako je bio True)
+            await self._process_spec(spec)
+            self.is_ready = True
+            logger.info("Tools loaded successfully", count=len(self.tools_names))
 
-    async def find_relevant_tools(self, user_query: str, top_k: int = 3) -> List[Dict]:
-        """Pronađi najbolje alate koristeći Cosine Similarity."""
-        if not self.is_ready or not self.tools_vectors:
-            return []
+    async def find_relevant_tools(self, query: str, top_k: int = 3) -> List[Dict]:
+        """Semantic Search alata koristeći Cosine Similarity."""
+        if not self.is_ready or not self.tools_vectors: return []
 
         try:
-            query_vector = await self._get_embedding(user_query)
+            query_vec = await self._get_embedding(query)
+            scores = np.dot(self.tools_vectors, query_vec)
             
-            # Vektorska operacija (dot product)
-            scores = np.dot(self.tools_vectors, query_vector)
+            # Dohvati top K indeksa
             top_indices = np.argsort(scores)[-top_k:][::-1]
             
-            relevant_tools = []
+            results = []
             for idx in top_indices:
-                tool_name = self.tools_names[idx]
-                score = float(scores[idx])
-                
-                # Prag relevantnosti (da ne šaljemo smeće modelu)
-                if score > 0.25: 
-                    logger.debug("Tool match candidate", name=tool_name, score=score)
-                    relevant_tools.append(self.tools_map[tool_name]['openai_schema'])
-                
-            return relevant_tools
+                if scores[idx] > 0.25: # Threshold relevantnosti
+                    tool_name = self.tools_names[idx]
+                    results.append(self.tools_map[tool_name]['openai_schema'])
+            return results
+            
         except Exception as e:
-            logger.error("Greška pri pretraživanju alata", error=str(e))
+            logger.error("Tool search error", error=str(e))
             return []
 
-    async def _get_embedding(self, text: str):
-        """Poziva OpenAI za embedding teksta (s Redis cacheom za upite)."""
-        # Cacheiranje samih query embeddinga može dodatno ubrzati stvar
-        cache_key = f"query_embed:{hashlib.md5(text.encode()).hexdigest()}"
-        cached = await self.redis.get(cache_key)
-        if cached:
-            return json.loads(cached)
-
-        text = text.replace("\n", " ")
-        response = await self.client.embeddings.create(
-            input=[text], 
-            model="text-embedding-3-small"
-        )
-        vector = response.data[0].embedding
-        
-        # Spremi u cache na kratko vrijeme (npr. 1h)
-        await self.redis.setex(cache_key, 3600, json.dumps(vector))
-        return vector
-
-    async def _parse_and_embed(self, spec: dict):
-        """Iterira kroz Swagger i priprema alate."""
-        # Privremene strukture da ne razbijemo live promet dok se učitava
-        new_tools_map = {}
-        new_tools_vectors = []
-        new_tools_names = []
+    async def _process_spec(self, spec: dict):
+        """Parsira Swagger i priprema interne strukture."""
+        new_map, new_vecs, new_names = {}, [], []
 
         for path, methods in spec.get('paths', {}).items():
             for method, details in methods.items():
-                if method.lower() not in ['get', 'post', 'put', 'delete']:
-                    continue
+                if method.lower() not in ['get', 'post', 'put', 'delete']: continue
+                
+                op_id = details.get('operationId')
+                if not op_id: continue
 
-                op_id = details.get('operationId', f"{method}_{path}")
-                description = details.get('summary', '') + " " + details.get('description', '')
+                desc = f"{details.get('summary', '')} {details.get('description', '')}"
                 
-                # Generiranje hasha za cache key embeddinga alata
-                desc_hash = hashlib.md5(description.encode('utf-8')).hexdigest()
-                cache_key = f"tool_embedding:{op_id}:{desc_hash}"
-
-                vector = None
-                cached_data = await self.redis.get(cache_key)
+                # Cacheiranje embeddinga u Redisu da ne trošimo OpenAI kredite pri restartu
+                cache_key = f"tool_embed:{op_id}:{hashlib.md5(desc.encode()).hexdigest()}"
                 
-                if cached_data:
-                    vector = json.loads(cached_data)
-                else:
-                    # Samo ako nemamo u cacheu, zovemo OpenAI
-                    # Ovo štedi novac/vrijeme pri restartu
-                    logger.info("Generiram novi embedding za alat", tool=op_id)
-                    vector = await self._get_embedding(description)
-                    await self.redis.set(cache_key, json.dumps(vector))
-                
-                new_tools_map[op_id] = {
-                    "path": path,
-                    "method": method,
-                    "description": description,
-                    "openai_schema": self._create_openai_schema(op_id, description, details),
-                    "operationId": op_id
-                }
-                new_tools_vectors.append(vector)
-                new_tools_names.append(op_id)
+                vector = await self._get_cached_embedding(cache_key, desc)
+                if vector:
+                    new_map[op_id] = {
+                        "path": path,
+                        "method": method,
+                        "openai_schema": self._to_openai_schema(op_id, desc, details)
+                    }
+                    new_vecs.append(vector)
+                    new_names.append(op_id)
 
         # Atomic switch
-        self.tools_map = new_tools_map
-        self.tools_vectors = new_tools_vectors
-        self.tools_names = new_tools_names
+        self.tools_map, self.tools_vectors, self.tools_names = new_map, new_vecs, new_names
 
-    def _create_openai_schema(self, name, description, details):
-        """Konvertira Swagger parametre u OpenAI function format."""
-        properties = {}
-        required_fields = []
+    async def _get_cached_embedding(self, key: str, text: str):
+        cached = await self.redis.get(key)
+        if cached: return json.loads(cached)
+        
+        vector = await self._get_embedding(text)
+        if vector:
+            await self.redis.set(key, json.dumps(vector))
+        return vector
 
-        # 1. Query/Path Parameters
-        if "parameters" in details:
-            for param in details["parameters"]:
-                param_name = param.get("name")
-                param_schema = param.get("schema", {})
-                param_type = param_schema.get("type", "string")
-                param_desc = param.get("description", "")
+    async def _get_embedding(self, text: str):
+        try:
+            text = text.replace("\n", " ")
+            resp = await self.client.embeddings.create(
+                input=[text], model="text-embedding-3-small"
+            )
+            return resp.data[0].embedding
+        except Exception as e:
+            logger.error("Embedding generation failed", error=str(e))
+            return None
 
-                properties[param_name] = {
-                    "type": param_type,
-                    "description": param_desc
-                }
+    def _to_openai_schema(self, name, desc, details):
+        """Konvertira Swagger operaciju u OpenAI Function format."""
+        params = {"type": "object", "properties": {}, "required": []}
+        
+        # Path/Query parametri
+        for p in details.get("parameters", []):
+            p_name = p.get("name")
+            p_type = p.get("schema", {}).get("type", "string")
+            params["properties"][p_name] = {"type": p_type, "description": p.get("description", "")}
+            if p.get("required"): params["required"].append(p_name)
 
-                if param.get("required", False):
-                    required_fields.append(param_name)
-
-        # 2. Request Body (JSON)
+        # Body parametri
         if "requestBody" in details:
-            content = details["requestBody"].get("content", {})
-            json_schema = content.get("application/json", {}).get("schema", {})
-            
-            if "properties" in json_schema:
-                for prop_name, prop_def in json_schema["properties"].items():
-                    properties[prop_name] = {
-                        "type": prop_def.get("type", "string"),
-                        "description": prop_def.get("description", "")
-                    }
-                    
-                    if prop_name in json_schema.get("required", []):
-                        required_fields.append(prop_name)
+            schema = details["requestBody"].get("content", {}).get("application/json", {}).get("schema", {})
+            for p_name, p_schema in schema.get("properties", {}).items():
+                params["properties"][p_name] = {
+                    "type": p_schema.get("type", "string"),
+                    "description": p_schema.get("description", "")
+                }
+                if p_name in schema.get("required", []):
+                    params["required"].append(p_name)
 
         return {
             "type": "function",
             "function": {
                 "name": name,
-                "description": description,
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required_fields
-                }
+                "description": desc[:1000], # Limit opisa
+                "parameters": params
             }
         }

@@ -8,31 +8,28 @@ logger = structlog.get_logger("security")
 
 async def validate_infobip_signature(request: Request, x_hub_signature: str = Header(None)):
     """
-    Validira integritet poruke koristeći HMAC-SHA256.
+    Validira integritet poruke koristeći HMAC-SHA256 potpis.
     """
     settings = get_settings()
     
-
-    if settings.APP_ENV != "production" and not x_hub_signature:
-        logger.warning("SECURITY WARNING: Zahtjev bez potpisa propušten (Non-Prod env).")
-        return
-
-
+    # U Developmentu dopuštamo testiranje bez potpisa (ali logiramo warning)
+    if settings.APP_ENV != "production":
+        if not x_hub_signature:
+            logger.warning("SECURITY: Missing signature allowed in NON-PROD env.")
+            return
+    
     if not x_hub_signature:
-        logger.warning("Odbijen zahtjev: Nedostaje potpis.")
-        raise HTTPException(status_code=403, detail="Signature missing")
+        logger.error("Security Block: Missing Signature")
+        raise HTTPException(status_code=403, detail="Signature required")
 
-
+    # Parsiranje potpisa (format: "sha256=xxxx...")
     try:
-        parts = x_hub_signature.split('=')
-        if len(parts) != 2 or parts[0] != 'sha256':
-            raise ValueError
-        received_sig = parts[1]
+        algo, received_sig = x_hub_signature.split('=')
+        if algo != 'sha256': raise ValueError
     except ValueError:
-        logger.warning("Odbijen zahtjev: Neispravan format potpisa.")
         raise HTTPException(status_code=403, detail="Invalid signature format")
 
-
+    # Izračun očekivanog potpisa
     try:
         body = await request.body()
         expected_sig = hmac.new(
@@ -41,10 +38,10 @@ async def validate_infobip_signature(request: Request, x_hub_signature: str = He
             hashlib.sha256
         ).hexdigest()
     except Exception as e:
-        logger.error("Interna greška pri validaciji potpisa", error=str(e))
-        raise HTTPException(status_code=500, detail="Security check failed")
+        logger.error("Signature calculation failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal Security Error")
 
+    # Sigurna usporedba (Timing Attack safe)
     if not hmac.compare_digest(expected_sig, received_sig):
-
-        logger.error("Sigurnosna povreda: Potpis ne odgovara.", received_partial=received_sig[:10] + "...")
+        logger.error("Security Block: Invalid Signature", expected="***", received="***")
         raise HTTPException(status_code=403, detail="Invalid signature")
