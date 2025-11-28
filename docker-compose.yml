@@ -19,7 +19,7 @@ services:
     labels:
       - "autoheal=true"
 
-  # [NOVO] Baza podataka za User Mapping (Auth)
+  # Baza podataka za User Mapping (Auth)
   postgres:
     image: postgres:15-alpine
     container_name: fleet_postgres
@@ -52,13 +52,12 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      postgres: # API mora čekati bazu
+      postgres:
         condition: service_healthy
     env_file:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379
-      # Spajamo se na container 'postgres'
       - DATABASE_URL=postgresql+asyncpg://appuser:${DB_PASSWORD}@postgres:5432/mobility_tenants
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -73,18 +72,18 @@ services:
     build: .
     deploy:
       mode: replicated
-      replicas: 1 # Za više replika, moraš maknuti fiksni port 8001 dolje!
+      replicas: 3  
     command: python worker.py
     volumes:
       - .:/app
-    ports:
-      - "8001:8001" # Prometheus metrics endpoint
+    # ports:       
+    #   - "8001:8001" 
     depends_on:
       redis:
         condition: service_healthy
       api:
         condition: service_healthy
-      postgres: # Worker mora čekati bazu
+      postgres:
         condition: service_healthy
     env_file:
       - .env
@@ -92,16 +91,14 @@ services:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql+asyncpg://appuser:${DB_PASSWORD}@postgres:5432/mobility_tenants
     healthcheck:
-      # [POPRAVAK] Dodan flag "-d mobility_tenants" da se spoji na pravu bazu
       test: ["CMD-SHELL", "redis-cli -h redis get worker:heartbeat | grep alive"]
       interval: 10s
       timeout: 5s
       retries: 3
-
     labels:
       - "autoheal=true"
 
-  # --- OPS & MONITORING STACK (Tvoj originalni dio) ---
+  # --- OPS & MONITORING STACK ---
   autoheal:
     image: willfarrell/autoheal
     container_name: fleet_autoheal
@@ -139,6 +136,6 @@ services:
 
 volumes:
   redis_data:
-  postgres_data: # Novo za bazu
+  postgres_data:
   prometheus_data:
   grafana_data:

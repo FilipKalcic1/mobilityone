@@ -14,7 +14,7 @@ logger = structlog.get_logger("webhook")
 # --- Pydantic Modeli za Infobip ---
 class InfobipMessage(BaseModel):
     text: str
-    sender: str = Field(..., alias="from") # Mapira "from" -> "sender"
+    sender: str = Field(..., alias="from") 
     messageId: str
     model_config = ConfigDict(extra='ignore')
 

@@ -11,10 +11,9 @@ from logger_config import configure_logger
 from services.queue import QueueService
 from services.context import ContextService
 
-# Routeri
 from routers import webhook
 
-# Inicijalizacija loggera odmah
+
 configure_logger()
 logger = structlog.get_logger("main")
 settings = get_settings()
@@ -24,6 +23,8 @@ async def lifespan(app: FastAPI):
     """
     Upravljanje životnim ciklusom aplikacije (Startup/Shutdown).
     """
+
+
     redis_client = None
     
     try:
@@ -35,9 +36,12 @@ async def lifespan(app: FastAPI):
         logger.info("Redis connected & Rate Limiter initialized.")
         
         # 2. Inicijalizacija Servisa (Samo onih koji trebaju API-ju)
-        # Worker ima svoje, API svoje, ali dijele Redis instance
         app.state.redis = redis_client
         app.state.queue = QueueService(redis_client)
+
+
+
+
         # Context i Registry ovdje ne trebaju nužno, ali mogu biti korisni za debug
         
         logger.info("API is ready to accept traffic.")
@@ -54,8 +58,8 @@ async def lifespan(app: FastAPI):
         logger.info("Shutdown complete.")
 
 app = FastAPI(
-    title="MobilityOne Fleet AI API",
-    version="2.0.0",
+    title="MobilityOne API",
+    version="1.0.0",
     lifespan=lifespan,
     docs_url=None if settings.APP_ENV == "production" else "/docs" # Sakrij docs u produkciji
 )
@@ -71,6 +75,7 @@ app.add_middleware(
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
     """Mjeri vrijeme obrade zahtjeva i dodaje ga u header."""
+
     start_time = time.time()
     response = await call_next(request)
     process_time = time.time() - start_time
@@ -82,5 +87,11 @@ app.include_router(webhook.router)
 
 @app.get("/health")
 async def health_check():
-    """Koristi Docker za provjeru je li servis živ."""
     return {"status": "ok", "env": settings.APP_ENV}
+
+@app.get("/docs")
+async def docs():
+    return {"status" : "None"}
+
+
+# treba dodati neke stvari , nisam dodao još neke files , jer bez njih ne ide 

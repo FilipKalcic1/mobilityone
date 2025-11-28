@@ -1,6 +1,6 @@
 import asyncio
 from database import engine, Base
-from models import UserMapping # Importaj modele da ih Base prepozna
+from models import UserMapping 
 import structlog
 
 logger = structlog.get_logger("db_init")

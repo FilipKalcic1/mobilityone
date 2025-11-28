@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     
     # --- INFRASTRUCTURE ---
     REDIS_URL: str
-    # Format: postgresql+asyncpg://user:pass@host:port/dbname
+
     DATABASE_URL: str
     
     # Database Tuning (Ključno za 5000+ usera)

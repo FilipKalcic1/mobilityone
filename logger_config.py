@@ -14,8 +14,9 @@ def configure_logger():
         structlog.processors.format_exc_info,
     ]
 
-    # U produkciji želimo JSON logove (za Datadog/Grafanu)
-    # U razvoju želimo lijepe boje (Console)
+    # ovdje se logs prilagođavaju ovisno o tome da li testiramo ili smo u produkciji 
+
+
     if settings.APP_ENV == "production":
         processors.append(structlog.processors.JSONRenderer())
     else:

@@ -31,18 +31,33 @@ AI_LATENCY = Histogram('ai_processing_seconds', 'Vrijeme obrade AI zahtjeva', bu
 # --- SIGURNOST LOGIRANJA ---
 SENSITIVE_KEYS = {'email', 'phone', 'password', 'token', 'authorization', 'secret', 'apikey', 'to'}
 
-def sanitize_log_data(data: dict) -> dict:
-    """Maskira osjetljive podatke u logovima."""
-    if not isinstance(data, dict): return data
-    clean = {}
-    for k, v in data.items():
-        if k.lower() in SENSITIVE_KEYS:
-            clean[k] = "***MASKED***"
-        elif isinstance(v, dict):
-            clean[k] = sanitize_log_data(v)
-        else:
-            clean[k] = v
-    return clean
+def sanitize_log_data(data: Any) -> Any:
+    """Rekurzivno maskira osjetljive podatke u rječnicima i listama."""
+    if isinstance(data, dict):
+        return {k: ("***MASKED***" if k.lower() in SENSITIVE_KEYS else sanitize_log_data(v)) for k, v in data.items()}
+    if isinstance(data, list):
+        return [sanitize_log_data(v) for v in data]
+    return data
+
+def safe_truncate(data: Any, max_len: int = 1000) -> Any:
+    """
+    Sanitizira podatke i osigurava da serijalizirani string nije prevelik.
+    Vraća dict ili string spreman za structlog.
+    """
+    try:
+        clean_data = sanitize_log_data(data)
+
+        dump = orjson.dumps(clean_data).decode('utf-8')
+        
+        if len(dump) > max_len:
+            return {
+                "truncated_data": dump[:max_len] + "... (truncated)", 
+                "original_size_chars": len(dump),
+                "info": "Payload too large for logs"
+            }
+        return clean_data
+    except Exception:
+        return {"error": "Data could not be serialized/sanitized"}
 
 class WhatsappWorker:
     def __init__(self):
