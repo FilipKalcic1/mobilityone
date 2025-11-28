@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
         logger.info("Redis connected & Rate Limiter initialized.")
         
         # 2. Inicijalizacija Servisa (Samo onih koji trebaju API-ju)
-        # Worker ima svoje, API svoje, ali dijele Redis
+        # Worker ima svoje, API svoje, ali dijele Redis instance
         app.state.redis = redis_client
         app.state.queue = QueueService(redis_client)
         # Context i Registry ovdje ne trebaju nužno, ali mogu biti korisni za debug
@@ -70,6 +70,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
+    """Mjeri vrijeme obrade zahtjeva i dodaje ga u header."""
     start_time = time.time()
     response = await call_next(request)
     process_time = time.time() - start_time

@@ -34,10 +34,21 @@ class ToolRegistry:
             await asyncio.sleep(interval)
             try:
                 async with httpx.AsyncClient() as client:
-                    head = await client.head(source_url)
-                    remote_hash = head.headers.get("ETag") or head.headers.get("Last-Modified")
+                    # [POPRAVAK] Fallback logika: Ako HEAD ne radi (404/405), probaj GET
+                    try:
+                        response = await client.head(source_url)
+                        if response.status_code >= 400:
+                            raise httpx.RequestError("HEAD not supported")
+                    except httpx.RequestError:
+                        # Ako server ne da HEAD, koristimo GET (malo sporije ali radi)
+                        response = await client.get(source_url)
                     
-                    if remote_hash != self.current_hash:
+                    remote_hash = response.headers.get("ETag") or response.headers.get("Last-Modified")
+                    
+                    # Ako nemamo headere za provjeru, pretpostavi da se promijenilo ako je prošlo puno vremena
+                    # ili jednostavno ignoriraj ako je response prazan.
+                    
+                    if remote_hash and remote_hash != self.current_hash:
                         logger.info("Detected new Swagger version, reloading...")
                         await self.load_swagger(source_url)
                         self.current_hash = remote_hash
@@ -61,7 +72,9 @@ class ToolRegistry:
                     spec = json.load(f)
         except Exception as e:
             logger.error("Failed to load Swagger", source=source, error=str(e))
-            if not self.is_ready: raise e # Ako je prvi start, sruši se.
+            if not self.is_ready: 
+                # Ako je prvi start, a Swagger fali, ne ruši sve, ali logiraj kritično
+                logger.critical("Starting without tools due to swagger error!")
             return
 
         if spec:
@@ -75,6 +88,8 @@ class ToolRegistry:
 
         try:
             query_vec = await self._get_embedding(query)
+            if not query_vec: return []
+
             scores = np.dot(self.tools_vectors, query_vec)
             
             # Dohvati top K indeksa
@@ -100,11 +115,20 @@ class ToolRegistry:
                 if method.lower() not in ['get', 'post', 'put', 'delete']: continue
                 
                 op_id = details.get('operationId')
-                if not op_id: continue
+                
+                # [POPRAVAK] Ako nema operationId, generiraj ga iz putanje!
+                if not op_id:
+                    # Npr. /api/vehicle/{id} -> get_api_vehicle_id
+                    clean_path = path.replace("{", "").replace("}", "").replace("/", "_").strip("_")
+                    op_id = f"{method.lower()}_{clean_path}"
+                    # Spremi generirani ID natrag u details da ga ostale funkcije vide
+                    details['operationId'] = op_id
 
                 desc = f"{details.get('summary', '')} {details.get('description', '')}"
+                if not desc.strip():
+                    desc = f"{method.upper()} {path}" # Fallback opis
                 
-                # Cacheiranje embeddinga u Redisu da ne trošimo OpenAI kredite pri restartu
+                # Cacheiranje embeddinga u Redisu
                 cache_key = f"tool_embed:{op_id}:{hashlib.md5(desc.encode()).hexdigest()}"
                 
                 vector = await self._get_cached_embedding(cache_key, desc)
@@ -153,7 +177,11 @@ class ToolRegistry:
 
         # Body parametri
         if "requestBody" in details:
-            schema = details["requestBody"].get("content", {}).get("application/json", {}).get("schema", {})
+            content = details["requestBody"].get("content", {})
+            # Podrška za json i form-data
+            schema = content.get("application/json", {}).get("schema", {}) or \
+                     content.get("application/x-www-form-urlencoded", {}).get("schema", {})
+            
             for p_name, p_schema in schema.get("properties", {}).items():
                 params["properties"][p_name] = {
                     "type": p_schema.get("type", "string"),

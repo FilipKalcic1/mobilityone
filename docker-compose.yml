@@ -33,7 +33,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U appuser"]
+      test: ["CMD-SHELL", "pg_isready -U appuser -d mobility_tenants"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -92,10 +92,12 @@ services:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql+asyncpg://appuser:${DB_PASSWORD}@postgres:5432/mobility_tenants
     healthcheck:
-      test: ["CMD", "redis-cli", "-h", "redis", "get", "worker:heartbeat"]
+      # [POPRAVAK] Dodan flag "-d mobility_tenants" da se spoji na pravu bazu
+      test: ["CMD-SHELL", "redis-cli -h redis get worker:heartbeat | grep alive"]
       interval: 10s
       timeout: 5s
       retries: 3
+
     labels:
       - "autoheal=true"
 
